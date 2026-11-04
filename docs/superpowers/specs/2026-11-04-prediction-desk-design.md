@@ -143,7 +143,7 @@ Postgres 16, SQLAlchemy 2.0, Alembic. **Money is stored as integer cents. Probab
 
 ### 4.1 Audit-trail guarantees
 1. **Append-only at the database level.** The app role has only `INSERT`/`SELECT` on `audit_events`, and a trigger rejects `UPDATE`/`DELETE`.
-2. **Hash chain.** `hash = sha256(prev_hash ‖ canonical_json(payload) ‖ seq ‖ ts)`. Appends are serialized with `pg_advisory_xact_lock` to prevent forks.
+2. **Hash chain.** `hash = sha256(prev_hash ‖ canonical_json(envelope) ‖ seq ‖ ts)`, where `envelope = {actor, entity, entity_id, action, payload}`, so who/what/action are tamper-evident too. Payloads may not contain floats or non-string keys. Appends are serialized with `pg_advisory_xact_lock` to prevent forks.
 3. **Transactional coupling.** Every state change writes its domain row and its audit event in one transaction.
 4. **Verification.** `GET /api/v1/audit/verify` and a nightly job walk the chain and report the first broken link. A break trips the kill switch.
 5. **Reproducibility.** Every decision stores `inputs_hash`, `model_version`, `limits_snapshot` and LLM transcript IDs.

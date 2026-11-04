@@ -107,6 +107,28 @@ async def test_tampering_is_detected(session: AsyncSession) -> None:
     assert result.checked == 2  # stops at the broken row, which is counted
 
 
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "actor = 'admin:mallory'",
+        "action = 'cancel'",
+        "entity_id = '999'",
+        "entity = 'other'",
+        "ts = ts + interval '1 second'",
+    ],
+)
+async def test_tampering_with_any_hashed_field_is_detected(
+    session: AsyncSession, assignment: str
+) -> None:
+    log = AuditLog(SimClock(T0))
+    for i in range(3):
+        await _append(log, session, i)
+    seq2 = (await _seqs(session))[1]
+    await _tamper(session, f"UPDATE audit_events SET {assignment} WHERE seq = :s", {"s": seq2})
+    result = await log.verify(session)
+    assert not result.ok and result.first_broken_seq == seq2 and result.checked == 2
+
+
 async def test_broken_prev_hash_link_is_detected(session: AsyncSession) -> None:
     log = AuditLog(SimClock(T0))
     for i in range(3):

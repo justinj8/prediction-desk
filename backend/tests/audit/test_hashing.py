@@ -55,10 +55,27 @@ def test_canonical_json_decimal_is_not_normalized() -> None:
     assert canonical_json({"x": Decimal("1.50")}) == b'{"x":"1.50"}'
 
 
-@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_canonical_json_rejects_non_finite(bad: float) -> None:
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("bad", [0.5, -0.0, 1e20, float("nan"), float("inf"), float("-inf")])
+def test_canonical_json_rejects_floats(bad: float) -> None:
+    with pytest.raises(TypeError, match="float"):
         canonical_json({"x": bad})
+
+
+def test_canonical_json_rejects_nested_float() -> None:
+    with pytest.raises(TypeError, match="float"):
+        canonical_json({"x": [1, {"y": [2, 0.5]}]})
+    with pytest.raises(TypeError, match="float"):
+        canonical_json({"x": (1, 0.5)})
+
+
+@pytest.mark.parametrize("key", [1, True, None])
+def test_canonical_json_rejects_non_str_keys(key: object) -> None:
+    with pytest.raises(TypeError, match="keys"):
+        canonical_json({"a": {key: 1}})
+    with pytest.raises(TypeError, match="keys"):
+        canonical_json({"a": [{key: 1}]})
+    with pytest.raises(TypeError, match="keys"):
+        canonical_json({key: 1})  # type: ignore[dict-item]
 
 
 @pytest.mark.parametrize("bad", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")])
