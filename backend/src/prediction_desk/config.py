@@ -2,7 +2,7 @@ from datetime import date
 from functools import lru_cache
 from typing import Any, Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_TEST_ADMIN_URL = "postgresql+psycopg://localhost/postgres"
@@ -22,10 +22,11 @@ def normalize_db_url(url: str) -> str:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str
+    # Connection URLs carry credentials: keep them out of repr/str (logs, tracebacks).
+    database_url: str = Field(repr=False)
     trading_mode: Literal["paper"] = "paper"
     llm_training_cutoff: date = date(2026, 1, 1)
-    test_database_admin_url: str = DEFAULT_TEST_ADMIN_URL
+    test_database_admin_url: str = Field(default=DEFAULT_TEST_ADMIN_URL, repr=False)
 
     @field_validator("trading_mode", mode="before")
     @classmethod

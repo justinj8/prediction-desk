@@ -60,3 +60,12 @@ def test_get_settings_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
         assert get_settings() is get_settings()
     finally:
         get_settings.cache_clear()
+
+
+def test_settings_repr_hides_database_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:s3cret-db@h/db")
+    monkeypatch.setenv("TEST_DATABASE_ADMIN_URL", "postgresql://u:s3cret-admin@h/postgres")
+    settings = Settings()
+    assert settings.database_url.endswith("s3cret-db@h/db")  # still loaded, just not shown
+    for text in (repr(settings), str(settings)):
+        assert "s3cret" not in text

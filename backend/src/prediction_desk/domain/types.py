@@ -27,7 +27,9 @@ def to_prob(value: Decimal | str | int) -> Prob:
         raise ValueError(f"probability must be finite: {value!r}")
     if d < 0 or d > 1:
         raise ValueError(f"probability must be in [0, 1]: {value!r}")
-    return Prob(d.quantize(_PROB_QUANTUM, rounding=ROUND_HALF_EVEN))
+    q = d.quantize(_PROB_QUANTUM, rounding=ROUND_HALF_EVEN)
+    # "-0" passes the range check; NUMERIC drops the sign, so normalize it here.
+    return Prob(q.copy_abs() if q.is_zero() else q)
 
 
 def require_utc(ts: datetime) -> datetime:

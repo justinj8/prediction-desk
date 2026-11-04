@@ -20,6 +20,8 @@ brew services start postgresql@16
 cd backend
 uv sync
 uv run pytest
+# optional: migrate a dev database
+createdb prediction_desk && DATABASE_URL=postgresql://localhost/prediction_desk uv run alembic upgrade head
 ```
 
 Tests need only `TEST_DATABASE_ADMIN_URL`, which defaults to `postgresql+psycopg://localhost/postgres`. Copy `backend/.env.example` for the other settings. The full CI gate is in `.github/workflows/ci.yml`.
