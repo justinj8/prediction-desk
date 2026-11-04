@@ -54,3 +54,16 @@ def test_require_utc() -> None:
     assert require_utc(datetime(2024, 1, 1, 7, tzinfo=est)) == datetime(2024, 1, 1, 12, tzinfo=UTC)
     with pytest.raises(ValueError, match="timezone"):
         require_utc(datetime(2024, 1, 1))
+
+
+@pytest.mark.parametrize("neg_zero", ["-0", Decimal("-0"), "-0.0000000", Decimal("-0E+3")])
+def test_to_prob_never_returns_signed_zero(neg_zero: str | Decimal) -> None:
+    # Postgres NUMERIC drops the sign, so "-0.00000" would hash differently after a round trip.
+    p = to_prob(neg_zero)
+    assert str(p) == "0.00000" and not p.is_signed()
+
+
+def test_to_prob_tiny_negative_is_still_out_of_range() -> None:
+    # The range check runs before quantizing: -0.000001 is rejected, not rounded to zero.
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        to_prob(Decimal("-0.000001"))

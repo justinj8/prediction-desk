@@ -11,14 +11,14 @@ from psycopg import sql
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from prediction_desk.config import DEFAULT_TEST_ADMIN_URL
+from prediction_desk.config import DEFAULT_TEST_ADMIN_URL, normalize_db_url
 from prediction_desk.db.engine import make_engine, make_sessionmaker
 
 _ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
 
 def _admin_url() -> str:
-    return os.environ.get("TEST_DATABASE_ADMIN_URL", DEFAULT_TEST_ADMIN_URL)
+    return normalize_db_url(os.environ.get("TEST_DATABASE_ADMIN_URL", DEFAULT_TEST_ADMIN_URL))
 
 
 def _raw_url(url: str) -> str:
