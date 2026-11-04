@@ -5,9 +5,14 @@ from enum import StrEnum
 from uuid import UUID
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from prediction_desk.audit.hashing import GENESIS_HASH
 from prediction_desk.audit.log import AuditLog
@@ -23,6 +28,12 @@ async def _append(log: AuditLog, s: AsyncSession, i: int) -> AuditEvent:
     )
     await s.commit()
     return ev
+
+
+async def _append_uncommitted(log: AuditLog, s: AsyncSession, i: int) -> AuditEvent:
+    return await log.append(
+        s, actor="system", entity="test", entity_id=str(i), action="noop", payload={"i": i}
+    )
 
 
 async def test_empty_chain_verifies(session: AsyncSession) -> None:
@@ -190,3 +201,71 @@ async def test_concurrent_appends_do_not_fork_chain(engine: AsyncEngine) -> None
         rows = (await s.execute(select(AuditEvent.prev_hash))).scalars().all()
     assert result.ok and result.checked == 20
     assert len(set(rows)) == 20  # no two rows share a parent: no fork
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "prev_hash = upper(prev_hash)",  # would make compute_hash raise ValueError
+        "payload = '{\"i\": 1.5}'::jsonb",  # would make canonical_json raise TypeError
+    ],
+)
+async def test_tampering_that_breaks_recompute_is_reported_not_raised(
+    session: AsyncSession, assignment: str
+) -> None:
+    log = AuditLog(SimClock(T0))
+    for i in range(3):
+        await _append(log, session, i)
+    seq2 = (await _seqs(session))[1]
+    await _tamper(session, f"UPDATE audit_events SET {assignment} WHERE seq = :s", {"s": seq2})
+    result = await log.verify(session)
+    assert not result.ok and result.first_broken_seq == seq2 and result.checked == 2
+
+
+async def test_verify_ignores_stale_identity_map_objects(session: AsyncSession) -> None:
+    log = AuditLog(SimClock(T0))
+    held = [await _append(log, session, i) for i in range(3)]  # keep the ORM objects alive
+    await _tamper(
+        session,
+        "UPDATE audit_events SET payload = '{\"i\": 99}' WHERE seq = :s",
+        {"s": held[1].seq},
+    )
+    assert held[1].payload == {"i": 1}  # identity map still holds the pre-tamper value
+    result = await log.verify(session)
+    assert not result.ok and result.first_broken_seq == held[1].seq
+
+
+@pytest.mark.parametrize("level", ["REPEATABLE READ", "SERIALIZABLE"])
+async def test_append_refuses_non_read_committed_isolation(
+    db_url: str, engine: AsyncEngine, level: str
+) -> None:
+    strict = create_async_engine(db_url, isolation_level=level)
+    try:
+        async with async_sessionmaker(strict)() as s:
+            with pytest.raises(
+                RuntimeError, match=f"READ COMMITTED isolation, got {level.lower()}"
+            ):
+                await _append_uncommitted(AuditLog(SimClock(T0)), s, 1)
+            await s.rollback()
+    finally:
+        await strict.dispose()
+    async with async_sessionmaker(engine)() as s:
+        count = (await s.execute(select(func.count()).select_from(AuditEvent))).scalar_one()
+    assert count == 0
+
+
+async def test_first_append_matches_golden_hash(session: AsyncSession) -> None:
+    ev = await _append_uncommitted(AuditLog(SimClock(T0)), session, 1)
+    await session.commit()
+    assert ev.seq == 1 and ev.prev_hash == GENESIS_HASH
+    assert ev.hash == "b956a4d07efc6f039a0995f4de03242486b83b77d323715afc816a43acbf122c"
+
+
+async def test_two_appends_in_one_transaction_chain_and_verify(session: AsyncSession) -> None:
+    log = AuditLog(SimClock(T0))
+    first = await _append_uncommitted(log, session, 1)
+    second = await _append_uncommitted(log, session, 2)
+    await session.commit()
+    assert first.prev_hash == GENESIS_HASH and second.prev_hash == first.hash
+    result = await log.verify(session)
+    assert result.ok and result.checked == 2
