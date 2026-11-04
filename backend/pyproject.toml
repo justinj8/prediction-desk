@@ -41,6 +41,8 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "TID", "DTZ", "RUF"]
 [tool.ruff.lint.per-file-ignores]
 "src/prediction_desk/clock.py" = ["TID251"]
 "tests/**" = ["DTZ"]
+# The revision template imports op/sa unconditionally; empty and merge revisions leave them unused.
+"migrations/versions/*" = ["F401"]
 
 [tool.mypy]
 strict = true

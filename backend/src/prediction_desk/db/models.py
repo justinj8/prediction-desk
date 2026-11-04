@@ -6,7 +6,6 @@ from typing import Any
 from sqlalchemy import (
     CHAR,
     BigInteger,
-    DateTime,
     Enum,
     Identity,
     Index,
@@ -18,6 +17,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from prediction_desk.db.base import Base
+from prediction_desk.db.types import UTCDateTime
 
 
 class Series(StrEnum):
@@ -30,12 +30,13 @@ class Release(Base):
     __tablename__ = "releases"
     __table_args__ = (UniqueConstraint("series", "period"),)
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    # BY DEFAULT, matching sa.Identity() in migration 0001.
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     series: Mapped[Series] = mapped_column(Enum(Series, name="series"))
     period: Mapped[str] = mapped_column(String)
-    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    scheduled_at: Mapped[datetime] = mapped_column(UTCDateTime())
     actual_value: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
-    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AuditEvent(Base):
@@ -44,7 +45,7 @@ class AuditEvent(Base):
 
     # BY DEFAULT (not ALWAYS): AuditLog.append inserts an explicitly reserved seq.
     seq: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ts: Mapped[datetime] = mapped_column(UTCDateTime())
     actor: Mapped[str] = mapped_column(String)
     entity: Mapped[str] = mapped_column(String)
     entity_id: Mapped[str] = mapped_column(String)

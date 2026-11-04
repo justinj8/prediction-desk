@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import (
 
 
 def make_engine(url: str) -> AsyncEngine:
-    return create_async_engine(url)
+    # Sessions run in UTC so server-side timestamp text and functions agree with the domain.
+    return create_async_engine(url, connect_args={"options": "-c timezone=UTC"})
 
 
 def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

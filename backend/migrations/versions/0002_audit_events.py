@@ -53,6 +53,9 @@ def upgrade() -> None:
         "BEFORE TRUNCATE ON audit_events "
         "FOR EACH STATEMENT EXECUTE FUNCTION audit_events_block_mutation()"
     )
+    # Belt and braces only: PUBLIC never held these privileges, so this REVOKE is a no-op. The
+    # triggers above are the active guard; the real restriction is the Plan 8 app role, which
+    # will be granted INSERT/SELECT only.
     op.execute("REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM PUBLIC")
 
 
