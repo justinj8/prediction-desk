@@ -182,8 +182,11 @@ async def test_verify_is_independent_of_session_time_zone(session: AsyncSession)
     await _append(log, session, 1)
     await _append(log, session, 2)
     await session.execute(text("SET TIME ZONE 'America/New_York'"))
-    row_ts = (await session.execute(select(AuditEvent.ts).limit(1))).scalar_one()
-    assert row_ts.utcoffset() != timedelta(0)  # confirms the driver really returned local time
+    # Raw SQL bypasses UTCDateTime: confirms the driver really returns local time here.
+    raw_ts = (await session.execute(text("SELECT ts FROM audit_events LIMIT 1"))).scalar_one()
+    assert raw_ts.utcoffset() != timedelta(0)
+    orm_ts = (await session.execute(select(AuditEvent.ts).limit(1))).scalar_one()
+    assert orm_ts.tzinfo is UTC  # the ORM column type normalizes it back
     assert (await log.verify(session)).ok
 
 
