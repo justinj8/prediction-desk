@@ -679,3 +679,25 @@ git commit -m "ci: add backend CI with Postgres, coverage gates and gitleaks; ad
 - Coverage ≥ 85% overall and 100% on `prediction_desk/audit/`.
 - `alembic upgrade head` → `downgrade base` → `upgrade head` round-trips.
 - Seven commits on `main`, one per task.
+
+---
+
+## Execution Outcome and Carry-Forward (added after execution)
+
+Plan 1 was executed with subagent-driven development: each task was implemented, then got a task review, then a final whole-branch review and one fix wave. The result is 109 tests, 99.35% overall coverage, and 100% coverage on `audit/`.
+
+**Rulings that amended this plan:**
+- **R5:** `append` stores and hashes the canonical-JSON round trip of the payload, so verify can reproduce the hash from JSONB.
+- **R7:** the hash covers an envelope `{actor, entity, entity_id, action, payload}`, not the payload alone.
+- **R8:** `canonical_json` rejects floats and non-str keys at any depth.
+- **R10:** `AuditLog.append` raises unless the transaction is READ COMMITTED.
+- **R11:** `to_prob` rejects tiny negatives rather than clamping them.
+- Timestamps are enforced as UTC at the DB boundary by `UTCDateTime`. Engines force `timezone=UTC`.
+- The `AuditLog.append` contract: READ COMMITTED only; call it last, right before commit and after all row locks; it never commits.
+
+**Requirements carried into later plans:**
+- **Plan 2:** new tables use `UTCDateTime` for every timestamp, and declare `Identity()` to match migrations. The drift test (`tests/db/test_drift.py`) must stay green. StrEnum columns must agree with the migration on member names vs. values.
+- **Plan 3:** a unit-of-work helper owns sessions and transactions. It must refuse AUTOCOMMIT engines (R14) and always open READ COMMITTED. Tighten the C3 test so it counts rows before rolling back (R15).
+- **Plan 4:** `LLM_TRAINING_CUTOFF` must fail closed: required, or defaulting conservatively (final-review M2).
+- **Plans 5/6:** every caller of `AuditLog.verify` (the API endpoint and the nightly job) treats any exception as a chain break and trips the kill switch, i.e. it fails closed (R13). Decode-level tampers such as `ts='infinity'` or huge JSON ints can raise.
+- **Plan 8:** create an app DB role with INSERT/SELECT only on `audit_events`. Revisit startup `-c timezone=UTC` if deploying behind a transaction-mode pooler (R16). Run actionlint and confirm the first GitHub CI run (the Postgres auth and pg_isready loop, and whether gitleaks needs `pull-requests: read`).
