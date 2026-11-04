@@ -38,8 +38,23 @@ def _default(obj: object) -> Any:
     raise TypeError(f"{type(obj).__name__} is not JSON serializable")
 
 
+def _reject_unstable(value: object) -> None:
+    """Floats and non-str keys do not survive a JSONB round trip (1e20, -0.0, int keys)."""
+    if isinstance(value, float):
+        raise TypeError("float is not allowed in audit payloads; use Decimal or str")
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"audit payload keys must be str, got {type(key).__name__}")
+            _reject_unstable(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _reject_unstable(item)
+
+
 def canonical_json(payload: Mapping[str, Any]) -> bytes:
-    """Deterministic UTF-8 JSON: sorted keys, no whitespace, no NaN/Infinity."""
+    """Deterministic UTF-8 JSON: sorted keys, no whitespace, no floats, str keys only."""
+    _reject_unstable(payload)
     return json.dumps(
         payload,
         sort_keys=True,

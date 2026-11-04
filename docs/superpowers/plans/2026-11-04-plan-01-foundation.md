@@ -18,7 +18,7 @@
 - All datetimes are timezone-aware UTC. Naive datetimes are rejected wherever they enter the domain.
 - Money is integer **cents**. Probabilities are `Decimal` quantized to 5 decimal places in `[0, 1]` (DB type `NUMERIC(6,5)`). No floats are persisted for either.
 - `TRADING_MODE` must be `paper`; any other value makes settings loading fail.
-- Audit hash: `hash = sha256(prev_hash ‖ canonical_json(payload) ‖ seq ‖ ts)`; genesis `prev_hash` is 64 zeros; appends serialize on `pg_advisory_xact_lock`.
+- Audit hash: `hash = sha256(prev_hash ‖ canonical_json(envelope) ‖ seq ‖ ts)` with `envelope = {actor, entity, entity_id, action, payload}`; payloads reject floats and non-str keys; genesis `prev_hash` is 64 zeros; appends serialize on `pg_advisory_xact_lock`.
 - `audit_events` rejects `UPDATE`, `DELETE` and `TRUNCATE` via triggers.
 - Coverage gates: **100% on `prediction_desk/audit/`**, 85% overall (`risk/` and `pricing/` join the 100% gate in Plan 3).
 - Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
