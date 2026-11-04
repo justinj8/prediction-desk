@@ -34,6 +34,8 @@ def _default(obj: object) -> Any:
     if isinstance(obj, UUID):
         return str(obj)
     if isinstance(obj, Enum):
+        # The pre-walk never sees inside an Enum, so check its value before json encodes it.
+        _reject_unstable(obj.value)
         return obj.value
     raise TypeError(f"{type(obj).__name__} is not JSON serializable")
 
@@ -65,15 +67,19 @@ def canonical_json(payload: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def compute_hash(prev_hash: str, payload: Mapping[str, Any], seq: int, ts: datetime) -> str:
-    """sha256(prev_hash || canonical_json(payload) || seq || ts), hex-encoded."""
+def compute_hash(prev_hash: str, envelope: Mapping[str, Any], seq: int, ts: datetime) -> str:
+    """sha256(prev_hash || canonical_json(envelope) || seq || ts), hex-encoded.
+
+    ``envelope`` is the R7 envelope built by ``prediction_desk.audit.log._envelope``: actor,
+    entity, entity_id, action and the stored payload, so every identity field is hashed.
+    """
     if not _HASH_RE.fullmatch(prev_hash):
         raise ValueError("prev_hash must be 64 lowercase hex characters")
     if isinstance(seq, bool) or not isinstance(seq, int):
         raise TypeError(f"seq must be int, got {type(seq).__name__}")
     digest = hashlib.sha256()
     digest.update(prev_hash.encode())
-    digest.update(canonical_json(payload))
+    digest.update(canonical_json(envelope))
     digest.update(str(seq).encode())
     digest.update(_iso(ts).encode())
     return digest.hexdigest()

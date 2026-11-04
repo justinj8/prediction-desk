@@ -20,6 +20,22 @@ class Kind(StrEnum):
     BUY = "buy"
 
 
+class Ratio(Enum):
+    HALF = 0.5
+
+
+GOLDEN_ENVELOPE = {
+    "actor": "system",
+    "entity": "test",
+    "entity_id": "1",
+    "action": "noop",
+    "payload": {"i": 1},
+}
+# Pinned once from the implementation and cross-checked with `shasum -a 256` over the raw bytes.
+# Changing it means every stored chain stops verifying: treat as a format break, not a fixup.
+GOLDEN_HASH = "b956a4d07efc6f039a0995f4de03242486b83b77d323715afc816a43acbf122c"
+
+
 def test_canonical_json_encodes_rich_types_deterministically() -> None:
     payload = {
         "b": Decimal("0.12345"),
@@ -76,6 +92,21 @@ def test_canonical_json_rejects_non_str_keys(key: object) -> None:
         canonical_json({"a": [{key: 1}]})
     with pytest.raises(TypeError, match="keys"):
         canonical_json({key: 1})  # type: ignore[dict-item]
+
+
+def test_canonical_json_rejects_enum_with_float_value() -> None:
+    with pytest.raises(TypeError, match="float"):
+        canonical_json({"x": Ratio.HALF})
+
+
+def test_compute_hash_golden_vector() -> None:
+    ts = datetime(2024, 3, 12, 12, 0, tzinfo=UTC)
+    assert compute_hash(GENESIS_HASH, GOLDEN_ENVELOPE, 1, ts) == GOLDEN_HASH
+
+
+def test_compute_hash_takes_envelope_keyword() -> None:
+    ts = datetime(2024, 3, 12, 12, 0, tzinfo=UTC)
+    assert compute_hash(GENESIS_HASH, envelope=GOLDEN_ENVELOPE, seq=1, ts=ts) == GOLDEN_HASH
 
 
 @pytest.mark.parametrize("bad", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")])

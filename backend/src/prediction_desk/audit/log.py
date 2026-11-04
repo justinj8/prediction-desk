@@ -52,10 +52,28 @@ class AuditLog:
     ) -> AuditEvent:
         """Append one event on the caller's session. Never commits.
 
-        The advisory lock is transaction-scoped, so concurrent appenders serialize until the
-        caller commits or rolls back.
+        Usage contract:
+
+        - READ COMMITTED only. Under REPEATABLE READ or SERIALIZABLE the transaction snapshot
+          predates the lock, so the tail read could miss a concurrent append and fork the
+          chain. Any other level raises ``RuntimeError`` (after the lock is taken, before
+          anything is written); the caller must roll back. The isolation level is never
+          changed on the caller's behalf.
+        - Call it last in the transaction, right before commit, and after taking any row
+          locks. The advisory lock is global (one key for the whole log) and is held until
+          the caller commits or rolls back, so every other appender waits on this transaction.
+        - It never commits. Several appends in one transaction chain correctly.
         """
-        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": AUDIT_LOCK_KEY})
+        level = (
+            await session.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock(:key), current_setting('transaction_isolation')"
+                ),
+                {"key": AUDIT_LOCK_KEY},
+            )
+        ).one()[1]
+        if level != "read committed":
+            raise RuntimeError(f"AuditLog.append requires READ COMMITTED isolation, got {level}")
         prev_hash = (
             await session.execute(select(AuditEvent.hash).order_by(AuditEvent.seq.desc()).limit(1))
         ).scalar_one_or_none() or GENESIS_HASH
@@ -85,21 +103,44 @@ class AuditLog:
         return event
 
     async def verify(self, session: AsyncSession) -> VerifyResult:
-        """Walk the chain in seq order; stop at the first row that does not check out."""
+        """Walk the chain in seq order; stop at the first row that does not check out.
+
+        Selects plain columns, not entities, so values come from the database rather than
+        from ORM objects already in the session's identity map (which may be stale).
+        """
         expected_prev = GENESIS_HASH
         checked = 0
-        rows = await session.stream_scalars(select(AuditEvent).order_by(AuditEvent.seq))
+        rows = await session.stream(
+            select(
+                AuditEvent.seq,
+                AuditEvent.ts,
+                AuditEvent.actor,
+                AuditEvent.entity,
+                AuditEvent.entity_id,
+                AuditEvent.action,
+                AuditEvent.payload,
+                AuditEvent.prev_hash,
+                AuditEvent.hash,
+            ).order_by(AuditEvent.seq)
+        )
         try:
             async for row in rows:
                 checked += 1
-                # compute_hash normalizes row.ts to UTC; the driver returns the session time zone.
-                recomputed = compute_hash(
-                    row.prev_hash,
-                    _envelope(row.actor, row.entity, row.entity_id, row.action, row.payload),
-                    row.seq,
-                    row.ts,
-                )
-                if row.prev_hash != expected_prev or row.hash != recomputed:
+                # Link check first: a tampered prev_hash may not even be valid hash input.
+                if row.prev_hash != expected_prev:
+                    return VerifyResult(ok=False, checked=checked, first_broken_seq=row.seq)
+                try:
+                    # compute_hash normalizes ts to UTC; the driver returns the session time zone.
+                    recomputed = compute_hash(
+                        row.prev_hash,
+                        _envelope(row.actor, row.entity, row.entity_id, row.action, row.payload),
+                        row.seq,
+                        row.ts,
+                    )
+                except (TypeError, ValueError):
+                    # A tampered row can hold content append never writes (e.g. a float).
+                    return VerifyResult(ok=False, checked=checked, first_broken_seq=row.seq)
+                if row.hash != recomputed:
                     return VerifyResult(ok=False, checked=checked, first_broken_seq=row.seq)
                 expected_prev = row.hash
         finally:
