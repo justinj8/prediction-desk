@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     def _normalize_trading_mode(cls, value: Any) -> Any:
         return value.strip().lower() if isinstance(value, str) else value
 
+    @field_validator("fred_api_key", "alpha_vantage_api_key", mode="before")
+    @classmethod
+    def _blank_key_is_none(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("database_url")
     @classmethod
     def _normalize_database_url(cls, value: str) -> str:
