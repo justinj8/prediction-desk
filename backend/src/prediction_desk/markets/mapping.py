@@ -14,7 +14,6 @@ from typing import Final, Literal
 
 from prediction_desk.db.models import Release
 from prediction_desk.domain.enums import MEASURE_SERIES, Comparator, Measure, Venue
-from prediction_desk.markets.polymarket import EVENT_SLUG_PATTERNS
 from prediction_desk.markets.types import VenueMarket
 
 MAPPER_VERSION = "rules:v1"
@@ -67,14 +66,47 @@ KALSHI_MEASURES: Final[dict[str, Measure]] = {
     "KXFEDDECISION": Measure.FOMC_CHANGE_BP,
 }
 
-# Same order as polymarket.EVENT_SLUG_PATTERNS (strict zip fails at import if that changes length).
-POLYMARKET_MEASURES: Final[tuple[tuple[re.Pattern[str], Measure], ...]] = tuple(
-    zip(
-        EVENT_SLUG_PATTERNS,
-        (Measure.CPI_YOY, Measure.CORE_CPI_YOY, Measure.FOMC_CHANGE_BP),
-        strict=True,
-    )
+
+@dataclass(frozen=True)
+class PolymarketEventRule:
+    """One tracked Polymarket event family.
+
+    ``slug`` decides whether an event is tracked at all (the adapter's discovery filter uses
+    it), ``measure`` is what its markets resolve on, and ``period`` extracts the slug's
+    ``month`` (and ``year`` when the slug carries one) for release linking.
+    """
+
+    slug: re.Pattern[str]
+    measure: Measure
+    period: re.Pattern[str]
+
+
+# The single source of truth for Polymarket event slugs; polymarket.EVENT_SLUG_PATTERNS
+# derives from it.
+POLYMARKET_EVENT_RULES: Final[tuple[PolymarketEventRule, ...]] = (
+    PolymarketEventRule(
+        re.compile(r"^[a-z]+-inflation-us-annual(-\d+)?$"),
+        Measure.CPI_YOY,
+        re.compile(r"^(?P<month>[a-z]+)-inflation-us-annual"),
+    ),
+    PolymarketEventRule(
+        re.compile(r"^core-cpi-yoy-[a-z]+-\d{4}(-\d+)?$"),
+        Measure.CORE_CPI_YOY,
+        re.compile(r"^core-cpi-yoy-(?P<month>[a-z]+)-(?P<year>\d{4})"),
+    ),
+    # A 4-digit year only when followed by "-" or the end: "-20260729232808632" is a creation
+    # stamp, not a year.
+    PolymarketEventRule(
+        re.compile(r"^fed-decision-in-[a-z]+(-\d+)?$"),
+        Measure.FOMC_CHANGE_BP,
+        re.compile(r"^fed-decision-in-(?P<month>[a-z]+)(?:-(?P<year>\d{4})(?:-|$))?"),
+    ),
 )
+
+
+def polymarket_rule(event_slug: str) -> PolymarketEventRule | None:
+    return next((r for r in POLYMARKET_EVENT_RULES if r.slug.match(event_slug)), None)
+
 
 # Kalshi "greater" markets: the rules must state the comparator. The precision phrase varies
 # between events, so it is deliberately not checked; precision comes from the measure.
@@ -89,6 +121,9 @@ POLYMARKET_RULES_PHRASES: Final[dict[Measure, tuple[str, ...]]] = {
     Measure.CORE_CPI_YOY: ("Consumer Price Index", "12-month"),
     Measure.FOMC_CHANGE_BP: ("upper bound",),
 }
+# Core vs headline CPI: every recorded core-cpi-yoy market's rules say "excluding food and
+# energy" and no recorded headline (inflation-us-annual) market's do. Case-insensitive.
+POLYMARKET_CORE_PHRASE: Final = "food and energy"
 POLYMARKET_CPI_TITLES: Final[tuple[tuple[re.Pattern[str], Comparator], ...]] = (
     (re.compile(r"≤([0-9]+\.[0-9])%"), Comparator.LTE),
     (re.compile(r"≥([0-9]+\.[0-9])%"), Comparator.GTE),
@@ -117,11 +152,6 @@ MONTH_ABBREVIATIONS: Final[dict[str, str]] = {
 }
 
 KALSHI_EVENT_PERIOD: Final = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})?$")
-POLYMARKET_SLUG_PERIODS: Final[tuple[re.Pattern[str], ...]] = (
-    re.compile(r"^(?P<month>[a-z]+)-inflation-us-annual"),
-    re.compile(r"^core-cpi-yoy-(?P<month>[a-z]+)-(?P<year>\d{4})"),
-    re.compile(r"^fed-decision-in-(?P<month>[a-z]+)(?:-(?P<year>\d{4})(?:-|$))?"),
-)
 
 
 def _terms(measure: Measure, comparator: Comparator, strike_lo: Decimal) -> ContractTerms:
@@ -199,10 +229,19 @@ def _polymarket_fomc(title: str) -> ContractTerms | Unmapped:
     return _terms(measure, Comparator.GTE if plus else Comparator.EQ, Decimal(int(amount)))
 
 
+def _core_headline_consistent(measure: Measure, rules_text: str) -> bool:
+    """Core CPI rules must mention food and energy; headline CPI rules must not."""
+    if measure not in (Measure.CPI_YOY, Measure.CORE_CPI_YOY):
+        return True
+    says_core = POLYMARKET_CORE_PHRASE in rules_text.casefold()
+    return says_core == (measure is Measure.CORE_CPI_YOY)
+
+
 def _map_polymarket(m: VenueMarket) -> ContractTerms | Unmapped:
-    measure = next((ms for pattern, ms in POLYMARKET_MEASURES if pattern.match(m.event_id)), None)
-    if measure is None:
+    rule = polymarket_rule(m.event_id)
+    if rule is None:
         return Unmapped("unknown_series")
+    measure = rule.measure
     title = m.strike.get("group_item_title")
     if not isinstance(title, str):
         return Unmapped("unparseable_strike")
@@ -213,6 +252,8 @@ def _map_polymarket(m: VenueMarket) -> ContractTerms | Unmapped:
     if isinstance(terms, Unmapped):
         return terms
     if not all(phrase in m.rules_text for phrase in POLYMARKET_RULES_PHRASES[measure]):
+        return Unmapped("rules_text_mismatch")
+    if not _core_headline_consistent(measure, m.rules_text):
         return Unmapped("rules_text_mismatch")
     return terms
 
@@ -235,12 +276,13 @@ def _kalshi_period(event_id: str) -> str | None:
 
 def _polymarket_period_matches(event_id: str, period: str) -> bool:
     """Slug month (and year, where the slug carries one) must agree with 'YYYY-MM[-DD]'."""
-    for pattern in POLYMARKET_SLUG_PERIODS:
-        if matched := pattern.match(event_id):
-            month = MONTH_NUMBERS.get(matched.group("month"))
-            year = matched.groupdict().get("year")
-            return month == period[5:7] and (year is None or year == period[:4])
-    return False
+    rule = polymarket_rule(event_id)
+    matched = None if rule is None else rule.period.match(event_id)
+    if matched is None:
+        return False
+    month = MONTH_NUMBERS.get(matched.group("month"))
+    year = matched.groupdict().get("year")
+    return month == period[5:7] and (year is None or year == period[:4])
 
 
 def _period_matches(m: VenueMarket, release: Release) -> bool:

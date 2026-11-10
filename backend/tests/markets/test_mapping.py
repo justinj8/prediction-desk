@@ -1,3 +1,5 @@
+import dataclasses
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -12,12 +14,17 @@ from prediction_desk.domain.enums import Comparator, Measure, Series, Venue
 from prediction_desk.markets.kalshi import KALSHI_SERIES, KalshiAdapter
 from prediction_desk.markets.mapping import (
     MAPPER_VERSION,
+    POLYMARKET_EVENT_RULES,
     ContractTerms,
     Unmapped,
     link_release,
     map_market,
 )
-from prediction_desk.markets.polymarket import POLYMARKET_TAGS, PolymarketAdapter
+from prediction_desk.markets.polymarket import (
+    EVENT_SLUG_PATTERNS,
+    POLYMARKET_TAGS,
+    PolymarketAdapter,
+)
 from prediction_desk.markets.types import VenueMarket
 from prediction_desk.net.http import ResilientHttp
 
@@ -30,6 +37,11 @@ PAYROLLS_RULES = "If nonfarm payrolls are above 90000 as reported by the Bureau 
 PM_CPI_DESC = (
     "inflation over the 12-month period ending October 2026. The percentage change in the "
     "Consumer Price Index (CPI) per the BLS."
+)
+PM_CORE_DESC = (
+    "core inflation (excluding food and energy) over the 12-month period ending October 2026. "
+    "The percentage change in the Consumer Price Index for All Urban Consumers excluding "
+    "food and energy (Core CPI-U)."
 )
 PM_FED_DESC = "defined by the upper bound of the target federal funds range."
 
@@ -242,9 +254,33 @@ def test_polymarket_cpi_titles(title: str, comparator: Comparator, lo: Decimal) 
 
 
 def test_polymarket_core_cpi_measure() -> None:
-    m = _poly("3.3%", slug="core-cpi-yoy-october-2026")
+    m = _poly("3.3%", slug="core-cpi-yoy-october-2026", desc=PM_CORE_DESC)
     t = map_market(m)
     assert isinstance(t, ContractTerms) and t.measure is Measure.CORE_CPI_YOY
+
+
+@pytest.mark.parametrize(
+    ("slug", "desc"),
+    [
+        ("core-cpi-yoy-october-2026", PM_CPI_DESC),  # core slug, headline rules
+        ("october-inflation-us-annual", PM_CORE_DESC),  # headline slug, core rules
+        ("october-inflation-us-annual", PM_CPI_DESC + " Excluding FOOD AND ENERGY."),
+    ],
+)
+def test_polymarket_core_headline_discriminator(slug: str, desc: str) -> None:
+    assert map_market(_poly("3.3%", slug=slug, desc=desc)) == Unmapped("rules_text_mismatch")
+
+
+def test_polymarket_core_phrase_is_case_insensitive() -> None:
+    desc = PM_CORE_DESC.replace("food and energy", "Food And Energy")
+    t = map_market(_poly("3.3%", slug="core-cpi-yoy-october-2026", desc=desc))
+    assert isinstance(t, ContractTerms) and t.measure is Measure.CORE_CPI_YOY
+
+
+def test_polymarket_event_rules_are_the_single_slug_table() -> None:
+    measures = [rule.measure for rule in POLYMARKET_EVENT_RULES]
+    assert measures == [Measure.CPI_YOY, Measure.CORE_CPI_YOY, Measure.FOMC_CHANGE_BP]
+    assert tuple(rule.slug for rule in POLYMARKET_EVENT_RULES) == EVENT_SLUG_PATTERNS
 
 
 @pytest.mark.parametrize("title", ["3%", "<=3.2%", "≤ 3.2%", "3.25%", "≥3.2", "", "x3.2%", "3.2% "])
@@ -318,7 +354,7 @@ def test_link_release_polymarket_cpi() -> None:
 
 
 def test_link_release_core_polymarket_needs_year() -> None:
-    m = _poly("3.3%", slug="core-cpi-yoy-october-2026")
+    m = _poly("3.3%", slug="core-cpi-yoy-october-2026", desc=PM_CORE_DESC)
     assert link_release(m, _terms(m), [CPI_OCT]) is CPI_OCT
     old = _release(Series.CPI, "2025-10", CPI_OCT.scheduled_at)
     assert link_release(m, _terms(m), [old]) == Unmapped("period_mismatch")
@@ -443,20 +479,19 @@ POLYMARKET_CASSETTES = [
         CASSETTES / "test_polymarket" / "test_lists_only_single_meeting_fed_and_us_cpi_events.yaml"
     ),
 ]
-# market_id -> reason it is expected to be Unmapped. Expected empty: every recorded market fits.
-EXPECTED_UNMAPPED: dict[str, str] = {}
 
 
-def _check_all(markets: Sequence[VenueMarket]) -> int:
-    assert markets
-    bad = {
-        m.market_id: r.reason
-        for m in markets
-        if isinstance(r := map_market(m), Unmapped)
-        and EXPECTED_UNMAPPED.get(m.market_id) != r.reason
-    }
-    assert not bad, bad
-    return sum(isinstance(map_market(m), ContractTerms) for m in markets)
+def _measure_mix(markets: Sequence[VenueMarket]) -> dict[str, Counter[Measure]]:
+    mix: dict[str, Counter[Measure]] = {}
+    for m in markets:
+        terms = map_market(m)
+        assert isinstance(terms, ContractTerms), (m.market_id, terms)
+        mix.setdefault(m.event_id, Counter())[terms.measure] += 1
+    return mix
+
+
+def _by_id(markets: Sequence[VenueMarket]) -> dict[str, VenueMarket]:
+    return {m.market_id: m for m in markets}
 
 
 @pytest.mark.vcr(*KALSHI_CASSETTES)
@@ -467,7 +502,25 @@ async def test_all_recorded_kalshi_markets_map() -> None:
     )
     markets = [m for s in ("KXCPI", "KXFEDDECISION") for m in await adapter.list_markets(s)]
     assert {"KXCPI", "KXFEDDECISION"} <= set(KALSHI_SERIES)
-    print(f"kalshi mapped: {_check_all(markets)} of {len(markets)}")
+    assert len(markets) == 70
+    mix = _measure_mix(markets)  # every recorded market maps (link_release aside)
+    assert mix["KXCPI-26NOV"] == Counter({Measure.CPI_MOM: 9})
+    assert mix["KXCPI-26DEC"] == Counter({Measure.CPI_MOM: 11})
+    fed = {e: c for e, c in mix.items() if e.startswith("KXFEDDECISION-")}
+    assert len(fed) == 10
+    assert all(c == Counter({Measure.FOMC_CHANGE_BP: 5}) for c in fed.values())
+    pinned = map_market(_by_id(markets)["KXFEDDECISION-26DEC-C26"])
+    assert isinstance(pinned, ContractTerms)
+    assert (pinned.measure, pinned.comparator, pinned.strike_lo) == (
+        Measure.FOMC_CHANGE_BP,
+        Comparator.LT,
+        Decimal("-25"),
+    )
+
+
+# Pinned Gamma market ids from the recorded cassette.
+PM_CORE_OCT_LOW = "5699276"  # core-cpi-yoy-october-2026, "≤2.2%"
+PM_ANNUAL_OCT_LOW = "5691083"  # october-inflation-us-annual, "≤3.2%"
 
 
 @pytest.mark.vcr(*POLYMARKET_CASSETTES)
@@ -479,4 +532,26 @@ async def test_all_recorded_polymarket_markets_map() -> None:
         clock,
     )
     markets = [m for t in POLYMARKET_TAGS for m in await adapter.list_markets(t)]
-    print(f"polymarket mapped: {_check_all(markets)} of {len(markets)}")
+    assert len(markets) == 42
+    mix = _measure_mix(markets)
+    assert mix == {
+        "october-inflation-us-annual": Counter({Measure.CPI_YOY: 12}),
+        "core-cpi-yoy-october-2026": Counter({Measure.CORE_CPI_YOY: 10}),
+        "fed-decision-in-december-20260729232808632": Counter({Measure.FOMC_CHANGE_BP: 5}),
+        "fed-decision-in-january-20260729233815502": Counter({Measure.FOMC_CHANGE_BP: 5}),
+        "fed-decision-in-march-2027": Counter({Measure.FOMC_CHANGE_BP: 5}),
+        "fed-decision-in-april-2027": Counter({Measure.FOMC_CHANGE_BP: 5}),
+    }
+    by_id = _by_id(markets)
+    core, annual = by_id[PM_CORE_OCT_LOW], by_id[PM_ANNUAL_OCT_LOW]
+    assert map_market(core) == ContractTerms(
+        Measure.CORE_CPI_YOY, Comparator.LTE, Decimal("2.2"), None, "pct", 1, "BLS"
+    )
+    assert map_market(annual) == ContractTerms(
+        Measure.CPI_YOY, Comparator.LTE, Decimal("3.2"), None, "pct", 1, "BLS"
+    )
+    # The real descriptions discriminate: swapping them across the two events never maps.
+    swapped_core = dataclasses.replace(core, rules_text=annual.rules_text)
+    swapped_annual = dataclasses.replace(annual, rules_text=core.rules_text)
+    assert map_market(swapped_core) == Unmapped("rules_text_mismatch")
+    assert map_market(swapped_annual) == Unmapped("rules_text_mismatch")
