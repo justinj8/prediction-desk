@@ -1,14 +1,16 @@
 """Persist FRED vintages. Rows are immutable per vintage, so re-runs insert nothing."""
 
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, timedelta
 
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from prediction_desk.clock import Clock
 from prediction_desk.db.models import DataObservation
 from prediction_desk.domain.enums import DataSource
+from prediction_desk.ingestion.alpha_vantage import AlphaVantageClient
 from prediction_desk.ingestion.fred import FredClient, fred_vintage_ts
 
 _BATCH = 2000
@@ -60,6 +62,45 @@ async def ingest_fred_series(
             ingested_at=now,
         )
         for o in fetched
+    ]
+    inserted = await upsert_observations(session, rows)
+    await session.commit()
+    return inserted
+
+
+async def ingest_alpha_vantage(
+    session: AsyncSession,
+    client: AlphaVantageClient,
+    clock: Clock,
+    series_id: str,
+    *,
+    min_interval: timedelta = timedelta(hours=24),
+) -> int:
+    """Fetch one Alpha Vantage series unless stored data is younger than ``min_interval``.
+
+    The free tier allows 25 calls/day, so a fresh vintage short-circuits before any request.
+    """
+    now = clock.now()
+    latest = await session.scalar(
+        select(func.max(DataObservation.vintage_ts)).where(
+            DataObservation.source == DataSource.ALPHA_VANTAGE,
+            DataObservation.series_id == series_id,
+        )
+    )
+    if latest is not None and latest > now - min_interval:
+        return 0
+    fetched = await client.series(series_id)
+    rows = [
+        DataObservation(
+            source=DataSource.ALPHA_VANTAGE,
+            series_id=series_id,
+            obs_date=obs_date,
+            vintage_ts=now,
+            published_on=None,
+            value=value,
+            ingested_at=now,
+        )
+        for obs_date, value in fetched
     ]
     inserted = await upsert_observations(session, rows)
     await session.commit()
