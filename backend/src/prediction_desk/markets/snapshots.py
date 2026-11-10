@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from prediction_desk.clock import Clock
 from prediction_desk.db.models import EventContract, MarketSnapshot
@@ -22,44 +22,60 @@ class SnapshotResult:
 
 
 async def record_snapshots(
-    session: AsyncSession, adapters: Mapping[Venue, VenueAdapter], clock: Clock
+    sessions: async_sessionmaker[AsyncSession],
+    adapters: Mapping[Venue, VenueAdapter],
+    clock: Clock,
 ) -> SnapshotResult:
+    """Snapshot the book of every open, mapped contract on a venue with an adapter.
+
+    Collects: a ``ProviderError`` for one contract is recorded in ``result.failures`` as
+    ``(contract_id, "Type: message")`` and the run continues. Each snapshot is committed in
+    its own short transaction after its fetch, so no transaction is open during HTTP and a
+    later failure (collected or raised) never loses snapshots already taken.
+
+    LIVE writer only: ``ts`` is the adapter's ``clock.now()`` at fetch time. Calling this under
+    a ``SimClock`` set in the past would write today's books into the past and leak them into
+    replay; replay must read stored snapshots via ``latest_snapshot_asof``.
+    """
     result = SnapshotResult()
-    contracts = (
-        await session.execute(
-            select(EventContract)
-            .where(
-                EventContract.mapping_status == MappingStatus.MAPPED,
-                EventContract.close_time > clock.now(),
-                EventContract.venue.in_(list(adapters)),
+    async with sessions() as session:
+        targets = (
+            await session.execute(
+                select(
+                    EventContract.id,
+                    EventContract.venue,
+                    EventContract.venue_market_id,
+                    EventContract.yes_token_id,
+                )
+                .where(
+                    EventContract.mapping_status == MappingStatus.MAPPED,
+                    EventContract.close_time > clock.now(),
+                    EventContract.venue.in_(list(adapters)),
+                )
+                .order_by(EventContract.id)
             )
-            .order_by(EventContract.id)
-        )
-    ).scalars()
-    for contract in list(contracts):
-        adapter = adapters[contract.venue]
+        ).all()
+    for contract_id, venue, market_id, yes_token_id in targets:
         try:
-            book = await adapter.order_book(
-                MarketRef(contract.venue_market_id, contract.yes_token_id)
-            )
+            book = await adapters[venue].order_book(MarketRef(market_id, yes_token_id))
         except ProviderError as e:
-            result.failures.append((contract.id, f"{type(e).__name__}: {e}"))
+            result.failures.append((contract_id, f"{type(e).__name__}: {e}"))
             continue
         bid, ask = book.best_bid, book.best_ask
-        session.add(
-            MarketSnapshot(
-                contract_id=contract.id,
-                ts=book.ts,
-                venue_ts=book.venue_ts,
-                best_bid=None if bid is None else bid.price,
-                best_ask=None if ask is None else ask.price,
-                bid_size=None if bid is None else bid.size,
-                ask_size=None if ask is None else ask.size,
-                book=book.to_json(),
+        async with sessions() as session, session.begin():
+            session.add(
+                MarketSnapshot(
+                    contract_id=contract_id,
+                    ts=book.ts,
+                    venue_ts=book.venue_ts,
+                    best_bid=None if bid is None else bid.price,
+                    best_ask=None if ask is None else ask.price,
+                    bid_size=None if bid is None else bid.size,
+                    ask_size=None if ask is None else ask.size,
+                    book=book.to_json(),
+                )
             )
-        )
         result.recorded += 1
-    await session.commit()
     return result
 
 

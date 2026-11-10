@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from prediction_desk.calendar.schedule import (
     FomcMeeting,
@@ -55,7 +55,10 @@ def _obs(series_id: str, obs: date, published_on: date) -> DataObservation:
 
 async def _releases(session: AsyncSession, series: Series) -> list[Release]:
     rows = await session.execute(
-        select(Release).where(Release.series == series).order_by(Release.scheduled_at)
+        select(Release)
+        .where(Release.series == series)
+        .order_by(Release.scheduled_at)
+        .execution_options(populate_existing=True)
     )
     return list(rows.scalars())
 
@@ -105,7 +108,9 @@ def test_scheduled_at_fomc_agrees_with_meeting_decision_at() -> None:
         assert scheduled_at(Series.FOMC, m.decision_date) == m.decision_at
 
 
-async def test_sync_uses_data_driven_period(session: AsyncSession) -> None:
+async def test_sync_uses_data_driven_period(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     session.add_all(
         [
             _obs("CPIAUCSL", date(2025, 8, 1), date(2025, 11, 20)),
@@ -118,7 +123,7 @@ async def test_sync_uses_data_driven_period(session: AsyncSession) -> None:
     await session.commit()
     requests: list[httpx.Request] = []
 
-    result = await sync_releases(session, _fred(NOV_20, requests), since=SINCE)
+    result = await sync_releases(sessions, _fred(NOV_20, requests), since=SINCE)
 
     cpi = await _releases(session, Series.CPI)
     assert [(r.period, r.scheduled_at) for r in cpi] == [
@@ -136,9 +141,11 @@ async def test_sync_uses_data_driven_period(session: AsyncSession) -> None:
         assert p["api_key"] == KEY
 
 
-async def test_sync_future_release_assumes_previous_month(session: AsyncSession) -> None:
+async def test_sync_future_release_assumes_previous_month(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     files = {"10": "fred_release_dates_10.json", "50": "fred_release_dates_empty.json"}
-    await sync_releases(session, _fred(files), since=SINCE)
+    await sync_releases(sessions, _fred(files), since=SINCE)
 
     cpi = await _releases(session, Series.CPI)
     assert [r.period for r in cpi] == ["2024-01", "2024-02", "2024-03"]
@@ -148,9 +155,11 @@ async def test_sync_future_release_assumes_previous_month(session: AsyncSession)
     assert cpi[2].scheduled_at == datetime(2024, 4, 10, 12, 30, tzinfo=UTC)
 
 
-async def test_sync_since_filters_release_dates(session: AsyncSession) -> None:
+async def test_sync_since_filters_release_dates(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     files = {"10": "fred_release_dates_10.json", "50": "fred_release_dates_empty.json"}
-    await sync_releases(session, _fred(files), since=date(2024, 3, 12))
+    await sync_releases(sessions, _fred(files), since=date(2024, 3, 12))
 
     assert [r.period for r in await _releases(session, Series.CPI)] == ["2024-02", "2024-03"]
     assert all(
@@ -158,33 +167,39 @@ async def test_sync_since_filters_release_dates(session: AsyncSession) -> None:
     )
 
 
-async def test_sync_is_idempotent(session: AsyncSession) -> None:
+async def test_sync_is_idempotent(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     fred = _fred(NOV_20)
-    first = await sync_releases(session, fred, since=SINCE)
-    second = await sync_releases(session, fred, since=SINCE)
+    first = await sync_releases(sessions, fred, since=SINCE)
+    second = await sync_releases(sessions, fred, since=SINCE)
 
     assert first == SyncResult(inserted=33, updated=0)
     assert second == SyncResult(inserted=0, updated=0)
 
 
-async def test_sync_fomc_rows_one_per_meeting(session: AsyncSession) -> None:
-    await sync_releases(session, _fred(NOV_20), since=SINCE)
+async def test_sync_fomc_rows_one_per_meeting(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    await sync_releases(sessions, _fred(NOV_20), since=SINCE)
     fomc = await _releases(session, Series.FOMC)
     assert len(fomc) == 32
     assert fomc[0].period == "2024-01-31"
     assert fomc[0].scheduled_at == datetime(2024, 1, 31, 19, 0, tzinfo=UTC)
 
 
-async def test_sync_corrects_assumed_period(session: AsyncSession) -> None:
+async def test_sync_corrects_assumed_period(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     fred = _fred(NOV_20)
-    await sync_releases(session, fred, since=SINCE)
+    await sync_releases(sessions, fred, since=SINCE)
     (assumed,) = await _releases(session, Series.CPI)
     assert assumed.period == "2025-10"
     original_id = assumed.id
 
     session.add(_obs("CPIAUCSL", date(2025, 9, 1), date(2025, 11, 20)))
     await session.commit()
-    result = await sync_releases(session, fred, since=SINCE)
+    result = await sync_releases(sessions, fred, since=SINCE)
 
     assert result == SyncResult(inserted=0, updated=1)
     (fixed,) = await _releases(session, Series.CPI)
@@ -193,22 +208,24 @@ async def test_sync_corrects_assumed_period(session: AsyncSession) -> None:
 
 
 async def test_sync_does_not_rewrite_period_once_actual_value_recorded(
-    session: AsyncSession,
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
     fred = _fred(NOV_20)
-    await sync_releases(session, fred, since=SINCE)
+    await sync_releases(sessions, fred, since=SINCE)
     (row,) = await _releases(session, Series.CPI)
     row.actual_value = 1  # type: ignore[assignment]
     session.add(_obs("CPIAUCSL", date(2025, 9, 1), date(2025, 11, 20)))
     await session.commit()
 
-    result = await sync_releases(session, fred, since=SINCE)
+    result = await sync_releases(sessions, fred, since=SINCE)
 
     assert result == SyncResult(inserted=1, updated=0)
     assert sorted(r.period for r in await _releases(session, Series.CPI)) == ["2025-09", "2025-10"]
 
 
-async def test_sync_updates_scheduled_at_when_it_differs(session: AsyncSession) -> None:
+async def test_sync_updates_scheduled_at_when_it_differs(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     session.add(
         Release(
             series=Series.CPI, period="2025-10", scheduled_at=datetime(2025, 11, 20, tzinfo=UTC)
@@ -216,7 +233,7 @@ async def test_sync_updates_scheduled_at_when_it_differs(session: AsyncSession) 
     )
     await session.commit()
 
-    result = await sync_releases(session, _fred(NOV_20), since=SINCE)
+    result = await sync_releases(sessions, _fred(NOV_20), since=SINCE)
 
     assert result == SyncResult(inserted=32, updated=1)
     (row,) = await _releases(session, Series.CPI)

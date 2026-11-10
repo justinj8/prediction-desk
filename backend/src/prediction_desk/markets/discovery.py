@@ -1,8 +1,10 @@
 """Contract discovery: upsert every venue market as a canonical EventContract.
 
 An audit event is written only when a contract's mapping identity changes (new row, remap).
-Each (venue, series_code) runs in its own transaction; the audit appends come last, right
-before commit, and a ProviderError on one series never stops the others.
+The service owns its sessions (ruling R9): releases are read in one short session, each
+(venue, series_code) is fetched with no transaction open and then written in its own
+transaction, and the audit appends come last, right before commit. A ProviderError on one
+series is collected and never stops the others.
 """
 
 from collections.abc import Mapping, Sequence
@@ -11,7 +13,7 @@ from decimal import Decimal
 from typing import Any, Final
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from prediction_desk.audit.log import AuditLog
 from prediction_desk.clock import Clock
@@ -211,15 +213,22 @@ async def _upsert_series(
 
 
 async def discover_contracts(
-    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     adapters: Mapping[Venue, tuple[VenueAdapter, Sequence[str]]],
     audit: AuditLog,
     clock: Clock,
 ) -> DiscoveryResult:
+    """Upsert every listed market of every (venue, series_code); audit mapping changes.
+
+    Collects: a ``ProviderError`` from ``list_markets`` is recorded in ``result.failures`` as
+    ``(series_code, "Type: message")`` and the run continues with the next series. Any other
+    exception rolls back that series' transaction and propagates; series already committed
+    stay committed.
+    """
     result = DiscoveryResult()
-    releases = list((await session.execute(select(Release))).scalars())
-    session.expunge_all()  # keep them readable after the read transaction ends
-    await session.commit()
+    async with sessions() as session:
+        # expire_on_commit=False sessions leave loaded attributes readable once closed.
+        releases = list((await session.execute(select(Release))).scalars())
     for venue, (adapter, codes) in adapters.items():
         for code in codes:
             try:
@@ -227,7 +236,7 @@ async def discover_contracts(
             except ProviderError as e:
                 result.failures.append((code, f"{type(e).__name__}: {e}"))
                 continue
-            try:
+            async with sessions() as session, session.begin():
                 entries = await _upsert_series(session, venue, markets, releases, clock, result)
                 for entry in entries:  # audit last, right before commit
                     await audit.append(
@@ -238,8 +247,4 @@ async def discover_contracts(
                         action=entry.action,
                         payload=entry.payload,
                     )
-                await session.commit()
-            except BaseException:
-                await session.rollback()
-                raise
     return result

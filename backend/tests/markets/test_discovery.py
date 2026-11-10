@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from prediction_desk.audit.log import AuditLog
 from prediction_desk.clock import SimClock
@@ -78,11 +78,14 @@ async def _seed_release(session: AsyncSession) -> None:
 
 
 async def _run(
-    session: AsyncSession, adapter: VenueAdapter, series: Sequence[str] = ("KXCPI",)
+    sessions: async_sessionmaker[AsyncSession],
+    adapter: VenueAdapter,
+    series: Sequence[str] = ("KXCPI",),
+    clock: SimClock | None = None,
 ) -> DiscoveryResult:
-    clock = SimClock(NOW)
+    clock = clock or SimClock(NOW)
     return await discover_contracts(
-        session, {Venue.KALSHI: (adapter, series)}, AuditLog(clock), clock
+        sessions, {Venue.KALSHI: (adapter, series)}, AuditLog(clock), clock
     )
 
 
@@ -90,9 +93,11 @@ async def _audit_count(session: AsyncSession) -> int:
     return (await session.execute(select(func.count()).select_from(AuditEvent))).scalar_one()
 
 
-async def test_discovery_maps_and_audits_once(session: AsyncSession) -> None:
+async def test_discovery_maps_and_audits_once(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _seed_release(session)
-    result = await _run(session, FakeAdapter({"KXCPI": [_market()]}))
+    result = await _run(sessions, FakeAdapter({"KXCPI": [_market()]}))
     assert (result.mapped, result.unmapped, result.changed, result.unchanged) == (1, 0, 1, 0)
     assert result.failures == []
     events = (await session.execute(select(AuditEvent))).scalars().all()
@@ -119,11 +124,13 @@ async def test_discovery_maps_and_audits_once(session: AsyncSession) -> None:
     assert ev.payload["release_id"] == row.release_id
 
 
-async def test_discovery_rerun_is_silent(session: AsyncSession) -> None:
+async def test_discovery_rerun_is_silent(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _seed_release(session)
     adapter = FakeAdapter({"KXCPI": [_market()]})
-    await _run(session, adapter)
-    result = await _run(session, adapter)
+    await _run(sessions, adapter)
+    result = await _run(sessions, adapter)
     assert (result.mapped, result.changed, result.unchanged) == (1, 0, 1)
     assert await _audit_count(session) == 1
 
@@ -131,24 +138,26 @@ async def test_discovery_rerun_is_silent(session: AsyncSession) -> None:
 async def test_rerun_after_db_roundtrip_is_unchanged(
     session: AsyncSession, engine: AsyncEngine
 ) -> None:
+    """Each run reads contracts back through a fresh session, so values round-trip the DB."""
     await _seed_release(session)
     markets = [_market(mid=f"KXCPI-26NOV-T{i}", floor=Decimal(i) / 10) for i in range(3)]
     markets.append(_market(mid="KXCPI-26NOV-BAD", floor=None))
     adapter = FakeAdapter({"KXCPI": markets})
-    first = await _run(session, adapter)
+    first = await _run(make_sessionmaker(engine), adapter)
     assert first.changed == 4
     count = await _audit_count(session)
-    async with make_sessionmaker(engine)() as fresh:
-        again = await _run(fresh, adapter)
-        assert again.unchanged == 4
-        assert again.changed == 0
-        assert await _audit_count(fresh) == count
+    again = await _run(make_sessionmaker(engine), adapter)
+    assert again.unchanged == 4
+    assert again.changed == 0
+    assert await _audit_count(session) == count
 
 
-async def test_discovery_terms_change_remaps(session: AsyncSession) -> None:
+async def test_discovery_terms_change_remaps(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _seed_release(session)
-    await _run(session, FakeAdapter({"KXCPI": [_market(floor=0.3)]}))
-    result = await _run(session, FakeAdapter({"KXCPI": [_market(floor=0.4)]}))
+    await _run(sessions, FakeAdapter({"KXCPI": [_market(floor=0.3)]}))
+    result = await _run(sessions, FakeAdapter({"KXCPI": [_market(floor=0.4)]}))
     assert (result.changed, result.unchanged) == (1, 0)
     actions = (
         (await session.execute(select(AuditEvent.action).order_by(AuditEvent.seq))).scalars().all()
@@ -158,10 +167,12 @@ async def test_discovery_terms_change_remaps(session: AsyncSession) -> None:
     assert row.strike_lo == Decimal("0.4")
 
 
-async def test_descriptive_change_is_not_audited(session: AsyncSession) -> None:
+async def test_descriptive_change_is_not_audited(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _seed_release(session)
-    await _run(session, FakeAdapter({"KXCPI": [_market()]}))
-    result = await _run(session, FakeAdapter({"KXCPI": [_market(title="renamed")]}))
+    await _run(sessions, FakeAdapter({"KXCPI": [_market()]}))
+    result = await _run(sessions, FakeAdapter({"KXCPI": [_market(title="renamed")]}))
     assert (result.changed, result.unchanged) == (0, 1)
     assert await _audit_count(session) == 1
     row = (await session.execute(select(EventContract))).scalar_one()
@@ -169,8 +180,10 @@ async def test_descriptive_change_is_not_audited(session: AsyncSession) -> None:
     assert row.updated_at == NOW
 
 
-async def test_discovery_unmapped_reason_persisted(session: AsyncSession) -> None:
-    result = await _run(session, FakeAdapter({"KXCPI": [_market()]}))
+async def test_discovery_unmapped_reason_persisted(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    result = await _run(sessions, FakeAdapter({"KXCPI": [_market()]}))
     assert (result.mapped, result.unmapped) == (0, 1)
     row = (await session.execute(select(EventContract))).scalar_one()
     assert row.mapping_status is MappingStatus.UNMAPPED
@@ -184,44 +197,65 @@ async def test_discovery_unmapped_reason_persisted(session: AsyncSession) -> Non
     assert ev.payload["reason"] == "no_release"
 
 
-async def test_discovery_remaps_when_release_appears(session: AsyncSession) -> None:
+async def test_discovery_remaps_when_release_appears(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     adapter = FakeAdapter({"KXCPI": [_market()]})
-    await _run(session, adapter)
+    await _run(sessions, adapter)
     await _seed_release(session)
-    result = await _run(session, adapter)
+    result = await _run(sessions, adapter)
     assert (result.mapped, result.changed) == (1, 1)
     row = (await session.execute(select(EventContract))).scalar_one()
     assert row.mapping_status is MappingStatus.MAPPED
     assert row.unmapped_reason is None
 
 
-async def test_discovery_continues_after_provider_error(session: AsyncSession) -> None:
+async def test_discovery_continues_after_provider_error(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _seed_release(session)
     adapter = FakeAdapter(
         {"KXCPICORE": [_market()]}, errors={"KXCPI": ProviderError("kalshi", "boom")}
     )
-    result = await _run(session, adapter, ("KXCPI", "KXCPICORE"))
+    result = await _run(sessions, adapter, ("KXCPI", "KXCPICORE"))
     assert result.failures == [("KXCPI", "ProviderError: kalshi: boom")]
     assert result.changed == 1
     assert await _audit_count(session) == 1
 
 
-async def test_discovery_db_error_rolls_back_and_raises(session: AsyncSession) -> None:
+async def test_discovery_db_error_rolls_back_and_raises(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _seed_release(session)
     bad = _market(title=None)  # NOT NULL violation on flush
     with pytest.raises(Exception, match="title"):
-        await _run(session, FakeAdapter({"KXCPI": [_market(mid="ok"), bad]}))
-    await session.rollback()
+        await _run(sessions, FakeAdapter({"KXCPI": [_market(mid="ok"), bad]}))
+    # The service rolled back its own session; the caller's session was never touched.
     assert (
         await session.execute(select(func.count()).select_from(EventContract))
     ).scalar_one() == 0
     assert await _audit_count(session) == 0
 
 
-async def test_discovery_audit_chain_verifies(session: AsyncSession) -> None:
+async def test_discovery_audit_chain_verifies(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _seed_release(session)
-    await _run(session, FakeAdapter({"KXCPI": [_market(floor=0.3), _market(mid="b", floor=0.5)]}))
-    await _run(session, FakeAdapter({"KXCPI": [_market(floor=0.4), _market(mid="b", floor=0.5)]}))
+    await _run(sessions, FakeAdapter({"KXCPI": [_market(floor=0.3), _market(mid="b", floor=0.5)]}))
+    await _run(sessions, FakeAdapter({"KXCPI": [_market(floor=0.4), _market(mid="b", floor=0.5)]}))
     verified = await AuditLog(SimClock(NOW)).verify(session)
     assert verified.ok
     assert verified.checked == 3
+
+
+async def test_discovery_unexpected_error_keeps_committed_series(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    await _seed_release(session)
+    adapter = FakeAdapter({"KXCPI": [_market()]}, errors={"KXCPICORE": RuntimeError("bug")})
+    with pytest.raises(RuntimeError, match="bug"):
+        await _run(sessions, adapter, ("KXCPI", "KXCPICORE"))
+    assert (
+        await session.execute(select(func.count()).select_from(EventContract))
+    ).scalar_one() == 1
+    assert await _audit_count(session) == 1

@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from prediction_desk.clock import SimClock
 from prediction_desk.db.models import DataObservation
@@ -82,7 +82,9 @@ async def test_asof_requires_aware_datetime(session: AsyncSession) -> None:
         await _asof(session, datetime(2024, 3, 13, 4, 0))
 
 
-async def test_ingest_is_idempotent(session: AsyncSession) -> None:
+async def test_ingest_is_idempotent(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=FIXTURE.read_bytes())
 
@@ -92,8 +94,8 @@ async def test_ingest_is_idempotent(session: AsyncSession) -> None:
     )
     client = FredClient(http, "test-key-not-real")
 
-    assert await ingest_fred_series(session, client, clock, "CPIAUCSL", date(2024, 1, 1)) == 4
-    assert await ingest_fred_series(session, client, clock, "CPIAUCSL", date(2024, 1, 1)) == 0
+    assert await ingest_fred_series(sessions, client, clock, "CPIAUCSL", date(2024, 1, 1)) == 4
+    assert await ingest_fred_series(sessions, client, clock, "CPIAUCSL", date(2024, 1, 1)) == 0
 
     total = await session.scalar(select(func.count()).select_from(DataObservation))
     assert total == 4
