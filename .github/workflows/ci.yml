@@ -46,11 +46,24 @@ jobs:
         run: uv run coverage report --include='*/prediction_desk/audit/*' --fail-under=100
 
   secrets:
-    runs-on: ubuntu-latest
+    # Scans the ENTIRE git history on every run with the pinned gitleaks CLI.
+    # (gitleaks-action@v2 builds a `<first>^..<last>` range from the push event,
+    # which fails on a repository's first push because the root commit has no parent.)
+    runs-on: ubuntu-24.04
+    env:
+      GITLEAKS_VERSION: 8.24.3
+      GITLEAKS_SHA256: 9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum --check --strict
+          tar -xzf "$tarball" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+      - name: Scan full git history for secrets
+        run: gitleaks git --redact --verbose --exit-code 1 .
