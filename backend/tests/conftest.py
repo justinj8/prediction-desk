@@ -2,6 +2,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import Any
 
 import psycopg
 import pytest
@@ -84,3 +85,12 @@ async def engine(db_url: str) -> AsyncIterator[AsyncEngine]:
 async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     async with make_sessionmaker(engine)() as s:
         yield s
+
+
+@pytest.fixture(scope="module")
+def vcr_config() -> dict[str, Any]:
+    """pytest-recording settings: never persist API keys; store readable response bodies."""
+    return {
+        "filter_query_parameters": [("api_key", "REDACTED"), ("apikey", "REDACTED")],
+        "decode_compressed_response": True,
+    }

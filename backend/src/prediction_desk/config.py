@@ -2,7 +2,7 @@ from datetime import date
 from functools import lru_cache
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_TEST_ADMIN_URL = "postgresql+psycopg://localhost/postgres"
@@ -27,6 +27,16 @@ class Settings(BaseSettings):
     trading_mode: Literal["paper"] = "paper"
     llm_training_cutoff: date = date(2026, 1, 1)
     test_database_admin_url: str = Field(default=DEFAULT_TEST_ADMIN_URL, repr=False)
+
+    # Data-provider credentials come only from env/.env; SecretStr keeps them out of repr/str.
+    fred_api_key: SecretStr | None = None
+    alpha_vantage_api_key: SecretStr | None = None
+    kalshi_api_base: str = "https://api.elections.kalshi.com/trade-api/v2"
+    polymarket_gamma_base: str = "https://gamma-api.polymarket.com"
+    polymarket_clob_base: str = "https://clob.polymarket.com"
+    fred_api_base: str = "https://api.stlouisfed.org/fred"
+    alpha_vantage_api_base: str = "https://www.alphavantage.co"
+    fred_observation_start: date = date(2015, 1, 1)
 
     @field_validator("trading_mode", mode="before")
     @classmethod
