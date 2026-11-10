@@ -225,3 +225,26 @@ async def test_malformed_market_skipped_with_warning(caplog: pytest.LogCaptureFi
     assert markets[1].rules_text == ""
     assert "BAD-NOCLOSE" in caplog.text
     assert "BAD-PARSE" in caplog.text
+
+
+async def test_null_identity_fields_skipped(caplog: pytest.LogCaptureFixture) -> None:
+    good = _raw("GOOD")
+    null_ticker = {**_raw("X"), "ticker": None}
+    null_event = {**_raw("NULLEVENT"), "event_ticker": None}
+    empty_event = {**_raw("EMPTYEVENT"), "event_ticker": ""}
+    null_close = {**_raw("NULLCLOSE"), "close_time": None}
+    no_ticker = {k: v for k, v in _raw("X").items() if k != "ticker"}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = {
+            "markets": [null_ticker, null_event, empty_event, null_close, no_ticker, good],
+            "cursor": "",
+        }
+        return _json(body)
+
+    with caplog.at_level(logging.WARNING, logger="prediction_desk.markets.kalshi"):
+        markets = await _adapter(_mock(handler)).list_markets("KXCPI")
+    assert [m.market_id for m in markets] == ["GOOD"]
+    assert caplog.text.count("<unknown>") == 2
+    for name in ("NULLEVENT", "EMPTYEVENT", "NULLCLOSE"):
+        assert name in caplog.text
