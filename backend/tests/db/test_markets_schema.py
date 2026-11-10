@@ -147,3 +147,40 @@ async def test_snapshot_naive_ts_rejected(session: AsyncSession) -> None:
     session.add(MarketSnapshot(contract_id=contract.id, ts=datetime(2026, 11, 10, 12, 0), book={}))
     with pytest.raises(StatementError, match="timezone"):
         await session.commit()
+
+
+@pytest.mark.parametrize("confidence", [Decimal("1.01"), Decimal("-0.01"), Decimal("9.99")])
+async def test_mapping_confidence_must_be_in_unit_range(
+    session: AsyncSession, confidence: Decimal
+) -> None:
+    session.add(_contract(mapping_confidence=confidence))
+    with pytest.raises(IntegrityError, match="ck_event_contracts_confidence_range"):
+        await session.commit()
+
+
+@pytest.mark.parametrize("confidence", [Decimal("0"), Decimal("0.5"), Decimal("1")])
+async def test_mapping_confidence_bounds_inclusive(
+    session: AsyncSession, confidence: Decimal
+) -> None:
+    session.add(_contract(mapping_confidence=confidence))
+    await session.commit()
+
+
+async def test_snapshot_sizes_keep_six_decimals_and_venue_ts(session: AsyncSession) -> None:
+    contract = _contract()
+    session.add(contract)
+    await session.flush()
+    size = Decimal("123456789012345678.123456")  # Numeric(24, 6) upper range
+    session.add(
+        MarketSnapshot(
+            contract_id=contract.id,
+            ts=NOW,
+            venue_ts=NOW,
+            bid_size=size,
+            ask_size=Decimal("0.000001"),
+            book={},
+        )
+    )
+    await session.commit()
+    row = (await session.execute(select(MarketSnapshot))).scalar_one()
+    assert (row.bid_size, row.ask_size, row.venue_ts) == (size, Decimal("0.000001"), NOW)

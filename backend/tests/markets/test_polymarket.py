@@ -35,6 +35,7 @@ def _adapter(
     return PolymarketAdapter(
         ResilientHttp("polymarket-gamma", GAMMA, clock, transport=gamma),
         ResilientHttp("polymarket-clob", CLOB, clock, transport=clob),
+        clock,
     )
 
 
@@ -287,7 +288,9 @@ async def test_book_timestamp_ms_exact() -> None:
         return _book_json([], [], ts="1700000000123")
 
     book = await _adapter(clob=httpx.MockTransport(handler)).order_book(MarketRef("m", "T"))
-    assert book.ts == datetime(2023, 11, 14, 22, 13, 20, 123000, tzinfo=UTC)
+    # R10: ts is when we observed the book; the CLOB's own time is venue_ts.
+    assert book.ts == T0
+    assert book.venue_ts == datetime(2023, 11, 14, 22, 13, 20, 123000, tzinfo=UTC)
 
 
 async def test_book_empty_asks() -> None:
@@ -434,4 +437,5 @@ async def test_recorded_clob_book_best_first() -> None:
     assert book.best_bid.price < book.best_ask.price
     assert len(book.bids) == len(bids) and len(book.asks) == len(asks)
     ms = int(raw["timestamp"])
-    assert book.ts == datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=ms)
+    assert book.venue_ts == datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=ms)
+    assert book.ts == T0

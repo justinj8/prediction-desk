@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from prediction_desk.clock import Clock
 from prediction_desk.domain.enums import Venue
 from prediction_desk.domain.types import require_utc
 from prediction_desk.markets.types import (
@@ -100,13 +101,14 @@ def _epoch_ms(raw: Any) -> datetime:
     return _EPOCH + timedelta(seconds=ms // 1000, milliseconds=ms % 1000)
 
 
-def _book(data: Any) -> OrderBook:
+def _book(data: Any, observed_at: datetime) -> OrderBook:
     if not isinstance(data, dict):
         raise TypeError("order book response is not an object")
     return OrderBook(
         bids=tuple(_levels(data.get("bids"))),
         asks=tuple(_levels(data.get("asks"))),
-        ts=_epoch_ms(data["timestamp"]),
+        ts=observed_at,
+        venue_ts=_epoch_ms(data["timestamp"]),
     )
 
 
@@ -133,9 +135,10 @@ def _event_markets(event: Any) -> tuple[str, list[Any]] | None:
 class PolymarketAdapter(VenueAdapter):
     venue = Venue.POLYMARKET
 
-    def __init__(self, gamma: ResilientHttp, clob: ResilientHttp) -> None:
+    def __init__(self, gamma: ResilientHttp, clob: ResilientHttp, clock: Clock) -> None:
         self._gamma = gamma
         self._clob = clob
+        self._clock = clock
 
     async def list_markets(self, series_code: str) -> list[VenueMarket]:
         out: list[VenueMarket] = []
@@ -167,7 +170,7 @@ class PolymarketAdapter(VenueAdapter):
             raise ProviderError("polymarket", "order_book requires a yes_token_id")
         data = await self._clob.get_json("/book", {"token_id": ref.yes_token_id})
         try:
-            return _book(data)
+            return _book(data, self._clock.now())
         except PARSE_ERRORS as exc:
             raise ProviderError(
                 "polymarket", f"malformed order book: {type(exc).__name__}"

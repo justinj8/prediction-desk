@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -34,6 +34,15 @@ def test_orderbook_rejects_price_above_one() -> None:
 def test_orderbook_rejects_naive_ts() -> None:
     with pytest.raises(ValueError):
         OrderBook(bids=(), asks=(), ts=datetime(2026, 11, 10, 12, 0))
+
+
+def test_orderbook_venue_ts_optional_and_utc() -> None:
+    assert OrderBook(bids=(), asks=(), ts=TS).venue_ts is None
+    assert OrderBook(bids=(), asks=(), ts=TS, venue_ts=TS).venue_ts == TS
+    with pytest.raises(ValueError):
+        OrderBook(bids=(), asks=(), ts=TS, venue_ts=datetime(2026, 11, 10, 12, 0))
+    with pytest.raises(ValueError, match="UTC"):
+        OrderBook(bids=(), asks=(), ts=TS, venue_ts=TS.astimezone(timezone(timedelta(hours=-5))))
 
 
 def test_empty_sides_have_no_best() -> None:

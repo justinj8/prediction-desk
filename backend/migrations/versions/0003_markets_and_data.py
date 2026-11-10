@@ -84,6 +84,10 @@ def upgrade() -> None:
             "AND comparator IS NOT NULL AND strike_lo IS NOT NULL)",
             name=op.f("ck_event_contracts_mapped_complete"),
         ),
+        sa.CheckConstraint(
+            "mapping_confidence BETWEEN 0 AND 1",
+            name=op.f("ck_event_contracts_confidence_range"),
+        ),
         sa.ForeignKeyConstraint(
             ["release_id"], ["releases.id"], name=op.f("fk_event_contracts_release_id_releases")
         ),
@@ -95,10 +99,11 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), sa.Identity(), nullable=False),
         sa.Column("contract_id", sa.Integer(), nullable=False),
         sa.Column("ts", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("venue_ts", sa.DateTime(timezone=True), nullable=True),
         sa.Column("best_bid", sa.Numeric(6, 5), nullable=True),
         sa.Column("best_ask", sa.Numeric(6, 5), nullable=True),
-        sa.Column("bid_size", sa.Numeric(20, 2), nullable=True),
-        sa.Column("ask_size", sa.Numeric(20, 2), nullable=True),
+        sa.Column("bid_size", sa.Numeric(24, 6), nullable=True),
+        sa.Column("ask_size", sa.Numeric(24, 6), nullable=True),
         sa.Column("book", postgresql.JSONB(), nullable=False),
         sa.ForeignKeyConstraint(
             ["contract_id"],

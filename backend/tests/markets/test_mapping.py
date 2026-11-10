@@ -476,6 +476,7 @@ async def test_all_recorded_polymarket_markets_map() -> None:
     adapter = PolymarketAdapter(
         ResilientHttp("polymarket-gamma", "https://gamma-api.polymarket.com", clock),
         ResilientHttp("polymarket-clob", "https://clob.polymarket.com", clock),
+        clock,
     )
     markets = [m for t in POLYMARKET_TAGS for m in await adapter.list_markets(t)]
     print(f"polymarket mapped: {_check_all(markets)} of {len(markets)}")

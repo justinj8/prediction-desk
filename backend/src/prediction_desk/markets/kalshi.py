@@ -104,7 +104,7 @@ def _book(data: Any, ts: datetime) -> OrderBook:
         raise TypeError("orderbook_fp is not an object")
     bids = _levels(book.get("yes_dollars"))
     asks = [BookLevel(Decimal(1) - lv.price, lv.size) for lv in _levels(book.get("no_dollars"))]
-    return OrderBook(bids=tuple(bids), asks=tuple(asks), ts=ts)
+    return OrderBook(bids=tuple(bids), asks=tuple(asks), ts=ts, venue_ts=None)
 
 
 class KalshiAdapter(VenueAdapter):
