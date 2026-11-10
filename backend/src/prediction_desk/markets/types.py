@@ -9,6 +9,26 @@ from typing import Any, Protocol
 from prediction_desk.domain.enums import Venue
 from prediction_desk.domain.types import require_utc
 
+# Every failure a malformed venue body can raise while being parsed. InvalidOperation is an
+# ArithmeticError; OrderBook validation raises ValueError.
+PARSE_ERRORS: tuple[type[Exception], ...] = (
+    KeyError,
+    TypeError,
+    ValueError,
+    AttributeError,
+    ArithmeticError,
+)
+
+
+def optional_text(raw: Mapping[str, Any], key: str) -> str:
+    """Optional venue text: missing or null is ""; anything but a string is malformed."""
+    value = raw.get(key)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TypeError(f"{key} is not a string")
+    return value
+
 
 @dataclass(frozen=True)
 class MarketRef:
@@ -50,8 +70,10 @@ class OrderBook:
 
     def __post_init__(self) -> None:
         for level in (*self.bids, *self.asks):
-            if not Decimal(0) <= level.price <= Decimal(1):
+            if not (level.price.is_finite() and Decimal(0) <= level.price <= Decimal(1)):
                 raise ValueError(f"price out of [0, 1]: {level.price}")
+            if not (level.size.is_finite() and level.size >= 0):
+                raise ValueError(f"size must be finite and non-negative: {level.size}")
         for a, b in zip(self.bids, self.bids[1:], strict=False):
             if not a.price > b.price:
                 raise ValueError("bids must be strictly descending")

@@ -55,3 +55,15 @@ def test_best_and_to_json() -> None:
         "bids": [["0.49", "142.15"], ["0.47", "100"]],
         "asks": [["0.51", "139.54"]],
     }
+
+
+@pytest.mark.parametrize(("price", "size"), [("NaN", "1"), ("Infinity", "1"), ("0.4", "NaN")])
+def test_orderbook_rejects_non_finite(price: str, size: str) -> None:
+    with pytest.raises(ValueError):
+        OrderBook(bids=(_lvl(price, size),), asks=(), ts=TS)
+
+
+def test_orderbook_rejects_negative_size_allows_zero() -> None:
+    with pytest.raises(ValueError, match="size"):
+        OrderBook(bids=(), asks=(_lvl("0.5", "-1"),), ts=TS)
+    assert OrderBook(bids=(_lvl("0.5", "0"),), asks=(), ts=TS).best_bid == _lvl("0.5", "0")

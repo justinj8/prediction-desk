@@ -87,10 +87,19 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         yield s
 
 
+def _drop_response_cookies(response: dict[str, Any]) -> dict[str, Any]:
+    """Never persist cookies a venue sets (e.g. Cloudflare bot-management tokens)."""
+    headers = response.get("headers", {})
+    for name in [h for h in headers if h.lower() == "set-cookie"]:
+        del headers[name]
+    return response
+
+
 @pytest.fixture(scope="module")
 def vcr_config() -> dict[str, Any]:
-    """pytest-recording settings: never persist API keys; store readable response bodies."""
+    """pytest-recording settings: never persist API keys or cookies; readable bodies."""
     return {
         "filter_query_parameters": [("api_key", "REDACTED"), ("apikey", "REDACTED")],
         "decode_compressed_response": True,
+        "before_record_response": _drop_response_cookies,
     }

@@ -47,12 +47,13 @@ async def _contract(
     market_id: str,
     close: datetime = NOW + timedelta(days=1),
     mapped: bool = True,
+    venue: Venue = Venue.KALSHI,
 ) -> EventContract:
     release = Release(series=Series.CPI, period=f"p-{market_id}", scheduled_at=close)
     session.add(release)
     await session.flush()
     row = EventContract(
-        venue=Venue.KALSHI,
+        venue=venue,
         venue_market_id=market_id,
         venue_event_id="E",
         yes_token_id=None,
@@ -125,7 +126,7 @@ async def test_snapshot_failure_isolated(session: AsyncSession) -> None:
     adapter = FakeBooks({"bad": ProviderError("kalshi", "boom"), "good": _book([], [])})
     result = await record_snapshots(session, {Venue.KALSHI: adapter}, SimClock(NOW))
     assert result.recorded == 1
-    assert result.failures == [(bad.id, "kalshi: boom")]
+    assert result.failures == [(bad.id, "ProviderError: kalshi: boom")]
     assert (
         await session.execute(select(func.count()).select_from(MarketSnapshot))
     ).scalar_one() == 1
@@ -153,3 +154,21 @@ async def test_latest_snapshot_asof_never_returns_future(session: AsyncSession) 
     exact = await latest_snapshot_asof(session, c.id, NOW + timedelta(minutes=20))
     assert exact is not None
     assert exact.ts == NOW + timedelta(minutes=20)
+
+
+class FakePolyBooks(FakeBooks):
+    venue = Venue.POLYMARKET
+
+
+async def test_snapshot_failure_on_one_venue_keeps_other_venue(session: AsyncSession) -> None:
+    kalshi = await _contract(session, "K")
+    poly = await _contract(session, "P", venue=Venue.POLYMARKET)
+    adapters = {
+        Venue.KALSHI: FakeBooks({"K": ProviderError("kalshi", "malformed order book: KeyError")}),
+        Venue.POLYMARKET: FakePolyBooks({"P": _book([("0.40", "10")], [])}),
+    }
+    result = await record_snapshots(session, adapters, SimClock(NOW))
+    assert result.recorded == 1
+    assert result.failures == [(kalshi.id, "ProviderError: kalshi: malformed order book: KeyError")]
+    snap = (await session.execute(select(MarketSnapshot))).scalar_one()
+    assert snap.contract_id == poly.id

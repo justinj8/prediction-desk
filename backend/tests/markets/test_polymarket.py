@@ -2,12 +2,14 @@ import dataclasses
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+import yaml
 
 from prediction_desk.clock import SimClock
 from prediction_desk.domain.enums import Venue
@@ -301,3 +303,135 @@ async def test_book_empty_asks() -> None:
 async def test_book_requires_token() -> None:
     with pytest.raises(ProviderError, match="yes_token_id"):
         await _adapter().order_book(MarketRef("m", None))
+
+
+# ---- totality: every parse/validation failure is a ProviderError --------------------------
+
+
+@pytest.mark.parametrize("body", [{"events": []}, "secret-body-text", 3, None])
+async def test_list_markets_non_list_body_raises_provider_error(body: Any) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return _json(body)
+
+    with pytest.raises(ProviderError) as exc:
+        await _adapter(httpx.MockTransport(handler)).list_markets("us-cpi")
+    assert exc.value.__cause__ is None
+    assert "secret-body-text" not in str(exc.value)
+
+
+async def test_malformed_events_skipped(caplog: pytest.LogCaptureFixture) -> None:
+    events = [
+        "junk",
+        None,
+        _event("october-inflation-us-annual", "notalist"),  # type: ignore[arg-type]
+        {"slug": "core-cpi-yoy-october-2026", "markets": None},
+        _event("core-cpi-yoy-october-2026", [_market("GOOD")]),
+    ]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return _json(events)
+
+    with caplog.at_level(logging.WARNING, logger="prediction_desk.markets.polymarket"):
+        markets = await _adapter(httpx.MockTransport(handler)).list_markets("us-cpi")
+    assert [m.market_id for m in markets] == ["GOOD"]
+    assert "october-inflation-us-annual" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("question", 5),
+        ("description", ["d"]),
+        ("groupItemTitle", 3.3),
+        ("closed", "false"),
+    ],
+)
+async def test_non_string_text_field_skips_market(
+    field: str, value: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        bad = _market("BADTEXT", **{field: value})
+        return _json([_event("october-inflation-us-annual", [bad, _market("GOOD")])])
+
+    with caplog.at_level(logging.WARNING, logger="prediction_desk.markets.polymarket"):
+        markets = await _adapter(httpx.MockTransport(handler)).list_markets("us-cpi")
+    assert [m.market_id for m in markets] == ["GOOD"]
+    assert "BADTEXT" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        "secret-body-text",
+        {"bids": [], "asks": []},
+        {"bids": [], "asks": [], "timestamp": "soon"},
+        {"bids": [], "asks": [], "timestamp": None},
+        {"bids": [], "asks": [], "timestamp": "9" * 30},
+        {"bids": "x", "asks": [], "timestamp": "1"},
+        {"bids": [{"price": "0.4"}], "asks": [], "timestamp": "1"},
+        {"bids": [{"price": "abc", "size": "1"}], "asks": [], "timestamp": "1"},
+        {"bids": [["0.4", "1"]], "asks": [], "timestamp": "1"},
+        {"bids": [None], "asks": [], "timestamp": "1"},
+        {"bids": [{"price": "2", "size": "1"}], "asks": [], "timestamp": "1"},
+    ],
+)
+async def test_book_malformed_raises_provider_error(body: Any) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return _json(body)
+
+    with pytest.raises(ProviderError) as exc:
+        await _adapter(clob=httpx.MockTransport(handler)).order_book(MarketRef("m", "T"))
+    assert exc.value.__cause__ is None
+    assert "secret-body-text" not in str(exc.value)
+
+
+async def test_book_unsorted_raises_provider_error() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        # Bids best-first instead of the CLOB's worst-to-best order: reversal breaks the book.
+        return _book_json(
+            [{"price": "0.035", "size": "1"}, {"price": "0.001", "size": "5"}],
+            [],
+        )
+
+    with pytest.raises(ProviderError, match="malformed order book"):
+        await _adapter(clob=httpx.MockTransport(handler)).order_book(MarketRef("m", "T"))
+
+
+# ---- recorded real order book --------------------------------------------------------------
+
+# YES token of "No change" in fed-decision-in-january (Gamma market 3215012), liquid when recorded.
+RECORDED_TOKEN = "63563009510989471204377539732457086916124654411092982704760023438039220215330"
+BOOK_CASSETTE = (
+    Path(__file__).parent
+    / "cassettes"
+    / "test_polymarket"
+    / "test_recorded_clob_book_best_first.yaml"
+)
+
+
+def _recorded_body() -> dict[str, Any]:
+    cassette = yaml.safe_load(BOOK_CASSETTE.read_text(encoding="utf-8"))
+    (interaction,) = cassette["interactions"]
+    body: dict[str, Any] = json.loads(interaction["response"]["body"]["string"])
+    return body
+
+
+@pytest.mark.vcr
+async def test_recorded_clob_book_best_first() -> None:
+    book = await _adapter().order_book(MarketRef("3215012", RECORDED_TOKEN))
+    # Real field names: bids/asks as {"price", "size"} objects plus an epoch-ms "timestamp".
+    # Bids run ascending and asks descending: the best level is last on both sides.
+    raw = _recorded_body()
+    bids = [Decimal(lv["price"]) for lv in raw["bids"]]
+    asks = [Decimal(lv["price"]) for lv in raw["asks"]]
+    assert len(bids) >= 2 and len(asks) >= 2
+    assert bids == sorted(bids)
+    assert asks == sorted(asks, reverse=True)
+    assert book.best_bid is not None and book.best_ask is not None
+    assert book.best_bid.price == bids[-1]
+    assert book.best_ask.price == asks[-1]
+    assert book.best_bid.price < book.best_ask.price
+    assert len(book.bids) == len(bids) and len(book.asks) == len(asks)
+    ms = int(raw["timestamp"])
+    assert book.ts == datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=ms)

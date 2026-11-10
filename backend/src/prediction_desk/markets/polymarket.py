@@ -1,6 +1,9 @@
 """Polymarket adapter: Gamma event discovery and normalized CLOB YES-side order books.
 
 The CLOB lists bids ascending and asks descending, so the best level is last on both sides.
+
+Both calls are total: any malformed response surfaces as ``ProviderError`` (never chained, and
+never quoting response text). A single malformed event or market is skipped with a WARNING.
 """
 
 import json
@@ -13,11 +16,13 @@ from typing import Any
 from prediction_desk.domain.enums import Venue
 from prediction_desk.domain.types import require_utc
 from prediction_desk.markets.types import (
+    PARSE_ERRORS,
     BookLevel,
     MarketRef,
     OrderBook,
     VenueAdapter,
     VenueMarket,
+    optional_text,
 )
 from prediction_desk.net.http import ProviderError, ResilientHttp
 
@@ -27,6 +32,7 @@ MAX_PAGES = 50
 PAGE_SIZE = 100
 
 POLYMARKET_TAGS: tuple[str, ...] = ("us-cpi", "fomc")
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 EVENT_SLUG_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^[a-z]+-inflation-us-annual(-\d+)?$"),
@@ -56,7 +62,13 @@ def _to_market(raw: Any, event_slug: str, tag: str) -> VenueMarket | None:
             raise ValueError("clobTokenIds is not a list of strings")
         if not tokens[0]:
             raise ValueError("empty yes token id")
-    except (KeyError, TypeError, ValueError) as exc:
+        title, rules, group_title = (
+            optional_text(raw, k) for k in ("question", "description", "groupItemTitle")
+        )
+        closed = raw.get("closed")
+        if closed is not None and not isinstance(closed, bool):
+            raise TypeError("closed is not a boolean")
+    except PARSE_ERRORS as exc:
         logger.warning("polymarket: skipping malformed market %s in %s: %r", label, event_slug, exc)
         return None
     return VenueMarket(
@@ -64,18 +76,58 @@ def _to_market(raw: Any, event_slug: str, tag: str) -> VenueMarket | None:
         market_id=label,
         event_id=event_slug,
         series_code=tag,
-        title=raw.get("question") or "",
-        rules_text=raw.get("description") or "",
+        title=title,
+        rules_text=rules,
         close_time=close_time,
-        status="closed" if raw.get("closed") else "active",
-        strike={"group_item_title": raw.get("groupItemTitle") or ""},
+        status="closed" if closed else "active",
+        strike={"group_item_title": group_title},
         yes_token_id=tokens[0],
     )
 
 
-def _levels(raw: list[dict[str, str]] | None) -> list[BookLevel]:
-    """CLOB lists run worst to best; return them best first."""
-    return [BookLevel(Decimal(lv["price"]), Decimal(lv["size"])) for lv in reversed(raw or [])]
+def _levels(raw: Any) -> list[BookLevel]:
+    """CLOB lists run worst to best; return them best first. Null means empty."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise TypeError("book side is not a list")
+    return [BookLevel(Decimal(lv["price"]), Decimal(lv["size"])) for lv in reversed(raw)]
+
+
+def _epoch_ms(raw: Any) -> datetime:
+    """Integer epoch milliseconds (a string on the wire) as exact UTC; no float math."""
+    ms = int(raw)
+    return _EPOCH + timedelta(seconds=ms // 1000, milliseconds=ms % 1000)
+
+
+def _book(data: Any) -> OrderBook:
+    if not isinstance(data, dict):
+        raise TypeError("order book response is not an object")
+    return OrderBook(
+        bids=tuple(_levels(data.get("bids"))),
+        asks=tuple(_levels(data.get("asks"))),
+        ts=_epoch_ms(data["timestamp"]),
+    )
+
+
+def _event_markets(event: Any) -> tuple[str, list[Any]] | None:
+    """(slug, raw markets) of a tracked event; None to skip it (with a warning if malformed)."""
+    if not isinstance(event, dict):
+        logger.warning("polymarket: skipping event that is not an object")
+        return None
+    slug = event.get("slug")
+    if not isinstance(slug, str) or not slug:
+        logger.warning("polymarket: skipping event with missing slug")
+        return None
+    if not any(p.match(slug) for p in EVENT_SLUG_PATTERNS):
+        return None
+    markets = event.get("markets")
+    if markets is None:
+        return slug, []
+    if not isinstance(markets, list):
+        logger.warning("polymarket: skipping event %s: markets is not a list", slug)
+        return None
+    return slug, markets
 
 
 class PolymarketAdapter(VenueAdapter):
@@ -95,14 +147,14 @@ class PolymarketAdapter(VenueAdapter):
                 "offset": str(page * PAGE_SIZE),
             }
             events = await self._gamma.get_json("/events", params)
+            if not isinstance(events, list):
+                raise ProviderError("polymarket", "malformed events response: not a list")
             for event in events:
-                slug = event.get("slug")
-                if not isinstance(slug, str) or not slug:
-                    logger.warning("polymarket: skipping event with missing slug")
+                tracked = _event_markets(event)
+                if tracked is None:
                     continue
-                if not any(p.match(slug) for p in EVENT_SLUG_PATTERNS):
-                    continue
-                for raw in event.get("markets") or []:
+                slug, raws = tracked
+                for raw in raws:
                     market = _to_market(raw, slug, series_code)
                     if market is not None:
                         out.append(market)
@@ -114,10 +166,9 @@ class PolymarketAdapter(VenueAdapter):
         if not ref.yes_token_id:
             raise ProviderError("polymarket", "order_book requires a yes_token_id")
         data = await self._clob.get_json("/book", {"token_id": ref.yes_token_id})
-        ms = int(data["timestamp"])
-        ts = datetime.fromtimestamp(ms // 1000, tz=UTC) + timedelta(milliseconds=ms % 1000)
-        return OrderBook(
-            bids=tuple(_levels(data.get("bids"))),
-            asks=tuple(_levels(data.get("asks"))),
-            ts=ts,
-        )
+        try:
+            return _book(data)
+        except PARSE_ERRORS as exc:
+            raise ProviderError(
+                "polymarket", f"malformed order book: {type(exc).__name__}"
+            ) from None
