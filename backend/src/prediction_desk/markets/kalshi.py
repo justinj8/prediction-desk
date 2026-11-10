@@ -3,6 +3,7 @@
 Kalshi publishes bids only, ascending with the best last. A NO bid at p is a YES ask at 1 - p.
 """
 
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -17,7 +18,11 @@ from prediction_desk.markets.types import (
     VenueAdapter,
     VenueMarket,
 )
-from prediction_desk.net.http import ResilientHttp
+from prediction_desk.net.http import ProviderError, ResilientHttp
+
+logger = logging.getLogger(__name__)
+
+MAX_PAGES = 50
 
 KALSHI_SERIES: tuple[str, ...] = (
     "KXCPI",
@@ -31,16 +36,25 @@ KALSHI_SERIES: tuple[str, ...] = (
 _STRIKE_KEYS = ("strike_type", "floor_strike", "cap_strike", "custom_strike")
 
 
-def _to_market(raw: dict[str, Any], series_code: str) -> VenueMarket:
+def _to_market(raw: dict[str, Any], series_code: str) -> VenueMarket | None:
+    """Map one raw market; None (with a warning) if an identity field is missing or bad."""
+    ticker = raw.get("ticker")
+    try:
+        close_time = require_utc(datetime.fromisoformat(raw["close_time"]))
+        event_id = raw["event_ticker"]
+        market_id = raw["ticker"]
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.warning("kalshi: skipping malformed market %s: %r", ticker or "<unknown>", exc)
+        return None
     return VenueMarket(
         venue=Venue.KALSHI,
-        market_id=raw["ticker"],
-        event_id=raw["event_ticker"],
+        market_id=market_id,
+        event_id=event_id,
         series_code=series_code,
-        title=raw["title"],
-        rules_text=raw["rules_primary"],
-        close_time=require_utc(datetime.fromisoformat(raw["close_time"])),
-        status=raw["status"],
+        title=raw.get("title") or "",
+        rules_text=raw.get("rules_primary") or "",
+        close_time=close_time,
+        status=raw.get("status") or "",
         strike={k: raw.get(k) for k in _STRIKE_KEYS},
         yes_token_id=None,
     )
@@ -61,15 +75,23 @@ class KalshiAdapter(VenueAdapter):
     async def list_markets(self, series_code: str) -> list[VenueMarket]:
         out: list[VenueMarket] = []
         cursor = ""
-        while True:
+        seen: set[str] = set()
+        for _ in range(MAX_PAGES):
             params = {"series_ticker": series_code, "status": "open", "limit": "1000"}
             if cursor:
                 params["cursor"] = cursor
             data = await self._http.get_json("/markets", params)
-            out.extend(_to_market(m, series_code) for m in data.get("markets") or [])
+            for raw in data.get("markets") or []:
+                market = _to_market(raw, series_code)
+                if market is not None:
+                    out.append(market)
             cursor = data.get("cursor") or ""
             if not cursor:
                 return out
+            if cursor in seen:
+                raise ProviderError("kalshi", "repeated pagination cursor")
+            seen.add(cursor)
+        raise ProviderError("kalshi", f"pagination exceeded {MAX_PAGES} pages")
 
     async def order_book(self, ref: MarketRef) -> OrderBook:
         data = await self._http.get_json(f"/markets/{ref.market_id}/orderbook")
