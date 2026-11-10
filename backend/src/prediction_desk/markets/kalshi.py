@@ -39,12 +39,18 @@ _STRIKE_KEYS = ("strike_type", "floor_strike", "cap_strike", "custom_strike")
 def _to_market(raw: dict[str, Any], series_code: str) -> VenueMarket | None:
     """Map one raw market; None (with a warning) if an identity field is missing or bad."""
     ticker = raw.get("ticker")
+    label = ticker if isinstance(ticker, str) and ticker else "<unknown>"
     try:
-        close_time = require_utc(datetime.fromisoformat(raw["close_time"]))
-        event_id = raw["event_ticker"]
         market_id = raw["ticker"]
+        event_id = raw["event_ticker"]
+        for ident in (market_id, event_id):
+            if not isinstance(ident, str) or not ident:
+                raise ValueError("ticker and event_ticker must be non-empty strings")
+        if raw["close_time"] is None:
+            raise ValueError("close_time is null")
+        close_time = require_utc(datetime.fromisoformat(raw["close_time"]))
     except (KeyError, TypeError, ValueError) as exc:
-        logger.warning("kalshi: skipping malformed market %s: %r", ticker or "<unknown>", exc)
+        logger.warning("kalshi: skipping malformed market %s: %r", label, exc)
         return None
     return VenueMarket(
         venue=Venue.KALSHI,
