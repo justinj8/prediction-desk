@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -8,9 +9,9 @@ import pytest
 
 from prediction_desk.clock import SimClock
 from prediction_desk.domain.enums import Venue
-from prediction_desk.markets.kalshi import KALSHI_SERIES, KalshiAdapter
+from prediction_desk.markets.kalshi import KALSHI_SERIES, MAX_PAGES, KalshiAdapter
 from prediction_desk.markets.types import BookLevel, MarketRef
-from prediction_desk.net.http import ResilientHttp
+from prediction_desk.net.http import ProviderError, ResilientHttp
 
 T0 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 BASE = "https://api.elections.kalshi.com/trade-api/v2"
@@ -153,3 +154,74 @@ async def test_orderbook_missing_sides() -> None:
     book = await _adapter(_mock(handler)).order_book(MarketRef("X", None))
     assert book.best_bid is None
     assert book.best_ask is None
+
+
+def _raw(ticker: str, **over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "ticker": ticker,
+        "event_ticker": "E",
+        "title": "t",
+        "rules_primary": "r",
+        "close_time": "2026-11-13T13:30:00Z",
+        "status": "active",
+    }
+    base.update(over)
+    return {k: v for k, v in base.items() if v is not None}
+
+
+async def test_repeated_cursor_raises_bounded() -> None:
+    calls = 0
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _json({"markets": [_raw("A")], "cursor": "same"})
+
+    with pytest.raises(ProviderError, match="repeated pagination cursor"):
+        await _adapter(_mock(handler)).list_markets("KXCPI")
+    assert calls == 2
+
+
+async def test_empty_last_page_terminates() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "cursor" not in req.url.params:
+            return _json({"markets": [_raw("A")], "cursor": "c1"})
+        return _json({"markets": [], "cursor": ""})
+
+    markets = await _adapter(_mock(handler)).list_markets("KXCPI")
+    assert [m.market_id for m in markets] == ["A"]
+
+
+async def test_page_limit_raises() -> None:
+    calls = 0
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _json({"markets": [], "cursor": f"c{calls}"})
+
+    with pytest.raises(ProviderError, match="pagination exceeded"):
+        await _adapter(_mock(handler)).list_markets("KXCPI")
+    assert calls == MAX_PAGES
+
+
+async def test_malformed_market_skipped_with_warning(caplog: pytest.LogCaptureFixture) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return _json(
+            {
+                "markets": [
+                    _raw("GOOD"),
+                    _raw("BAD-NOCLOSE", close_time=None),
+                    _raw("NORULES", rules_primary=None),
+                    _raw("BAD-PARSE", close_time="garbage"),
+                ],
+                "cursor": "",
+            }
+        )
+
+    with caplog.at_level(logging.WARNING, logger="prediction_desk.markets.kalshi"):
+        markets = await _adapter(_mock(handler)).list_markets("KXCPI")
+    assert [m.market_id for m in markets] == ["GOOD", "NORULES"]
+    assert markets[1].rules_text == ""
+    assert "BAD-NOCLOSE" in caplog.text
+    assert "BAD-PARSE" in caplog.text
