@@ -1,0 +1,16 @@
+{
+  "_note": "hand-built from FRED API docs; replace with a recorded response once FRED_API_KEY exists",
+  "realtime_start": "2024-01-01",
+  "realtime_end": "9999-12-31",
+  "order_by": "release_date",
+  "sort_order": "asc",
+  "count": 1,
+  "offset": 0,
+  "limit": 10000,
+  "release_dates": [
+    {
+      "release_id": 10,
+      "date": "2025-11-20"
+    }
+  ]
+}
