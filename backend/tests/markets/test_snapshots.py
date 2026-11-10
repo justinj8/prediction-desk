@@ -2,8 +2,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from prediction_desk.clock import SimClock
 from prediction_desk.db.models import AuditEvent, EventContract, MarketSnapshot, Release
@@ -79,10 +80,12 @@ async def _contract(
     return row
 
 
-async def test_snapshot_records_best_levels(session: AsyncSession) -> None:
+async def test_snapshot_records_best_levels(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     c = await _contract(session, "A")
     book = _book([("0.40", "10"), ("0.39", "5")], [("0.45", "7"), ("0.46", "3")])
-    result = await record_snapshots(session, {Venue.KALSHI: FakeBooks({"A": book})}, SimClock(NOW))
+    result = await record_snapshots(sessions, {Venue.KALSHI: FakeBooks({"A": book})}, SimClock(NOW))
     assert result.recorded == 1
     assert result.failures == []
     snap = (await session.execute(select(MarketSnapshot))).scalar_one()
@@ -96,11 +99,13 @@ async def test_snapshot_records_best_levels(session: AsyncSession) -> None:
     assert audit == 0
 
 
-async def test_snapshot_empty_book_stores_nulls(session: AsyncSession) -> None:
+async def test_snapshot_empty_book_stores_nulls(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _contract(session, "A")
     await _contract(session, "B")
     adapter = FakeBooks({"A": _book([], []), "B": _book([("0.40", "10")], [])})
-    result = await record_snapshots(session, {Venue.KALSHI: adapter}, SimClock(NOW))
+    result = await record_snapshots(sessions, {Venue.KALSHI: adapter}, SimClock(NOW))
     assert result.recorded == 2
     rows = (await session.execute(select(MarketSnapshot).order_by(MarketSnapshot.id))).scalars()
     a, b = list(rows)
@@ -110,26 +115,32 @@ async def test_snapshot_empty_book_stores_nulls(session: AsyncSession) -> None:
     assert (b.best_ask, b.ask_size) == (None, None)
 
 
-async def test_snapshot_skips_closed_and_unmapped(session: AsyncSession) -> None:
+async def test_snapshot_skips_closed_and_unmapped(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _contract(session, "closed", close=NOW - timedelta(seconds=1))
     await _contract(session, "unmapped", mapped=False)
     await _contract(session, "other_venue_missing")
     adapter = FakeBooks({"other_venue_missing": _book([], [])})
-    result = await record_snapshots(session, {Venue.KALSHI: adapter}, SimClock(NOW))
+    result = await record_snapshots(sessions, {Venue.KALSHI: adapter}, SimClock(NOW))
     assert result.recorded == 1
 
 
-async def test_snapshot_skips_venues_without_adapter(session: AsyncSession) -> None:
+async def test_snapshot_skips_venues_without_adapter(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _contract(session, "A")
-    result = await record_snapshots(session, {}, SimClock(NOW))
+    result = await record_snapshots(sessions, {}, SimClock(NOW))
     assert result.recorded == 0
 
 
-async def test_snapshot_failure_isolated(session: AsyncSession) -> None:
+async def test_snapshot_failure_isolated(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     bad = await _contract(session, "bad")
     await _contract(session, "good")
     adapter = FakeBooks({"bad": ProviderError("kalshi", "boom"), "good": _book([], [])})
-    result = await record_snapshots(session, {Venue.KALSHI: adapter}, SimClock(NOW))
+    result = await record_snapshots(sessions, {Venue.KALSHI: adapter}, SimClock(NOW))
     assert result.recorded == 1
     assert result.failures == [(bad.id, "ProviderError: kalshi: boom")]
     assert (
@@ -165,25 +176,41 @@ class FakePolyBooks(FakeBooks):
     venue = Venue.POLYMARKET
 
 
-async def test_snapshot_failure_on_one_venue_keeps_other_venue(session: AsyncSession) -> None:
+async def test_snapshot_failure_on_one_venue_keeps_other_venue(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     kalshi = await _contract(session, "K")
     poly = await _contract(session, "P", venue=Venue.POLYMARKET)
     adapters = {
         Venue.KALSHI: FakeBooks({"K": ProviderError("kalshi", "malformed order book: KeyError")}),
         Venue.POLYMARKET: FakePolyBooks({"P": _book([("0.40", "10")], [])}),
     }
-    result = await record_snapshots(session, adapters, SimClock(NOW))
+    result = await record_snapshots(sessions, adapters, SimClock(NOW))
     assert result.recorded == 1
     assert result.failures == [(kalshi.id, "ProviderError: kalshi: malformed order book: KeyError")]
     snap = (await session.execute(select(MarketSnapshot))).scalar_one()
     assert snap.contract_id == poly.id
 
 
-async def test_snapshot_stores_observed_and_venue_ts(session: AsyncSession) -> None:
+async def test_snapshot_stores_observed_and_venue_ts(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     await _contract(session, "A")
     venue_ts = NOW - timedelta(seconds=7)
     book = _book([("0.40", "1100024.031234")], [], venue_ts=venue_ts)
-    await record_snapshots(session, {Venue.KALSHI: FakeBooks({"A": book})}, SimClock(NOW))
+    await record_snapshots(sessions, {Venue.KALSHI: FakeBooks({"A": book})}, SimClock(NOW))
     snap = (await session.execute(select(MarketSnapshot))).scalar_one()
     assert (snap.ts, snap.venue_ts) == (NOW, venue_ts)
     assert snap.bid_size == D("1100024.031234")  # Numeric(24, 6): no rounding of real sizes
+
+
+async def test_snapshot_unexpected_error_keeps_earlier_snapshots(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    first = await _contract(session, "A")
+    await _contract(session, "B")
+    adapter = FakeBooks({"A": _book([("0.40", "10")], []), "B": RuntimeError("bug")})
+    with pytest.raises(RuntimeError, match="bug"):
+        await record_snapshots(sessions, {Venue.KALSHI: adapter}, SimClock(NOW))
+    snaps = (await session.execute(select(MarketSnapshot.contract_id))).scalars().all()
+    assert snaps == [first.id]

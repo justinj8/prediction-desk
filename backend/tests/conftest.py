@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 from psycopg import sql
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from prediction_desk.config import DEFAULT_TEST_ADMIN_URL, normalize_db_url
 from prediction_desk.db.engine import make_engine, make_sessionmaker
@@ -85,6 +85,12 @@ async def engine(db_url: str) -> AsyncIterator[AsyncEngine]:
 async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     async with make_sessionmaker(engine)() as s:
         yield s
+
+
+@pytest.fixture
+def sessions(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Session factory for batch services, which own their sessions (ruling R9)."""
+    return make_sessionmaker(engine)
 
 
 def _drop_response_cookies(response: dict[str, Any]) -> dict[str, Any]:

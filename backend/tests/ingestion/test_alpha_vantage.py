@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from prediction_desk.clock import SimClock
 from prediction_desk.db.models import DataObservation
@@ -166,7 +166,9 @@ async def _count(session: AsyncSession) -> int:
     )
 
 
-async def test_rate_limit_through_ingest_stores_nothing(session: AsyncSession) -> None:
+async def test_rate_limit_through_ingest_stores_nothing(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     calls = 0
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -176,12 +178,14 @@ async def test_rate_limit_through_ingest_stores_nothing(session: AsyncSession) -
 
     clock = SimClock(T0)
     with pytest.raises(ProviderRateLimited):
-        await ingest_alpha_vantage(session, _client(handler, clock), clock, CPI)
+        await ingest_alpha_vantage(sessions, _client(handler, clock), clock, CPI)
     assert calls == 1
     assert await _count(session) == 0
 
 
-async def test_freshness_gate_skips_recent_fetch(session: AsyncSession) -> None:
+async def test_freshness_gate_skips_recent_fetch(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     calls = 0
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -192,7 +196,7 @@ async def test_freshness_gate_skips_recent_fetch(session: AsyncSession) -> None:
     clock = SimClock(T0)
     client = _client(handler, clock)
 
-    assert await ingest_alpha_vantage(session, client, clock, CPI) == 3
+    assert await ingest_alpha_vantage(sessions, client, clock, CPI) == 3
     assert calls == 1
     row = (
         (
@@ -207,16 +211,18 @@ async def test_freshness_gate_skips_recent_fetch(session: AsyncSession) -> None:
     assert row.vintage_ts == T0 and row.ingested_at == T0 and row.published_on is None
 
     clock.advance(timedelta(hours=1))
-    assert await ingest_alpha_vantage(session, client, clock, CPI) == 0
+    assert await ingest_alpha_vantage(sessions, client, clock, CPI) == 0
     assert calls == 1
 
     clock.advance(timedelta(hours=24))  # 25h after the first fetch
-    assert await ingest_alpha_vantage(session, client, clock, CPI) == 3
+    assert await ingest_alpha_vantage(sessions, client, clock, CPI) == 3
     assert calls == 2
     assert await _count(session) == 6
 
 
-async def test_freshness_gate_is_per_series(session: AsyncSession) -> None:
+async def test_freshness_gate_is_per_series(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     calls = 0
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -226,6 +232,6 @@ async def test_freshness_gate_is_per_series(session: AsyncSession) -> None:
 
     clock = SimClock(T0)
     client = _client(handler, clock)
-    await ingest_alpha_vantage(session, client, clock, CPI)
-    await ingest_alpha_vantage(session, client, clock, "NONFARM_PAYROLL")
+    await ingest_alpha_vantage(sessions, client, clock, CPI)
+    await ingest_alpha_vantage(sessions, client, clock, "NONFARM_PAYROLL")
     assert calls == 2

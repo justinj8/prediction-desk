@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from prediction_desk.db.models import DataObservation, Release
 from prediction_desk.domain.enums import DataSource, Series
@@ -83,15 +83,32 @@ async def _data_period(session: AsyncSession, series_id: str, release_day: date)
     return None if latest is None else f"{latest.year:04d}-{latest.month:02d}"
 
 
-async def sync_releases(session: AsyncSession, fred: FredClient, *, since: date) -> SyncResult:
+async def sync_releases(
+    sessions: async_sessionmaker[AsyncSession], fred: FredClient, *, since: date
+) -> SyncResult:
+    """Upsert CPI/NFP releases from FRED release dates and FOMC decisions from the YAML.
+
+    Raises ``ProviderError`` if any FRED call fails, and then writes nothing: every release
+    date is fetched before the single write transaction opens, so a run never half-syncs.
+    """
+    fetched: dict[Series, list[date]] = {}
+    for series in (Series.CPI, Series.NFP):
+        fetched[series] = await fred.release_dates(FRED_RELEASE_IDS[series], since)
+    async with sessions() as session, session.begin():
+        return await _write_releases(session, fetched, since)
+
+
+async def _write_releases(
+    session: AsyncSession, fetched: dict[Series, list[date]], since: date
+) -> SyncResult:
     result = SyncResult(inserted=0, updated=0)
 
-    for series in (Series.CPI, Series.NFP):
+    for series, days in fetched.items():
         existing = {
             r.period: r
             for r in (await session.scalars(select(Release).where(Release.series == series)))
         }
-        for day in await fred.release_dates(FRED_RELEASE_IDS[series], since):
+        for day in days:
             if day < since:
                 continue
             period = await _data_period(session, _ANCHOR_SERIES[series], day)
@@ -116,7 +133,6 @@ async def sync_releases(session: AsyncSession, fred: FredClient, *, since: date)
             row.scheduled_at = meeting.decision_at
             result.updated += 1
 
-    await session.commit()
     return result
 
 
