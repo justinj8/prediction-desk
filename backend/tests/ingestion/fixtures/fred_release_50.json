@@ -1,0 +1,15 @@
+{
+  "_note": "hand-built from FRED API docs; replace with a recorded response once FRED_API_KEY exists",
+  "realtime_start": "2024-01-01",
+  "realtime_end": "2024-01-01",
+  "releases": [
+    {
+      "id": 50,
+      "realtime_start": "2024-01-01",
+      "realtime_end": "2024-01-01",
+      "name": "Employment Situation",
+      "press_release": true,
+      "link": "http://www.bls.gov/ces/"
+    }
+  ]
+}
