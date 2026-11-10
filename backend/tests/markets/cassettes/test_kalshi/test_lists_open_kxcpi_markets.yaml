@@ -1,0 +1,274 @@
+interactions:
+- request:
+    body: ''
+    headers:
+      accept:
+      - '*/*'
+      accept-encoding:
+      - gzip, deflate
+      connection:
+      - keep-alive
+      host:
+      - api.elections.kalshi.com
+      user-agent:
+      - python-httpx/0.28.1
+    method: GET
+    uri: https://api.elections.kalshi.com/trade-api/v2/markets?limit=1000&series_ticker=KXCPI&status=open
+  response:
+    body:
+      string: "{\"cursor\":\"\",\"markets\":[{\"can_close_early\":true,\"close_time\":\"2026-12-10T13:29:00Z\",\"created_time\":\"2026-11-05T14:30:27.953514Z\",\"event_ticker\":\"KXCPI-26NOV\",\"exchange_index\":0,\"expected_expiration_time\":\"2026-12-10T14:56:00Z\",\"expiration_time\":\"2027-03-11T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":-0.3,\"last_price_dollars\":\"0.9400\",\"latest_expiration_time\":\"2027-03-11T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.0800\",\"no_bid_dollars\":\"0.0600\",\"no_sub_title\":\"Above
+        -0.3%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2026-12-10T14:56:00Z\",\"open_interest_fp\":\"1595.01\",\"open_time\":\"2026-11-05T15:00:00Z\",\"previous_price_dollars\":\"0.9200\",\"previous_yes_ask_dollars\":\"0.9300\",\"previous_yes_bid_dollars\":\"0.9200\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than -0.3% (single-decimal)
+        in November 2026, then the market resolves to Yes.\",\"rules_secondary\":\"The
+        market will always close at 8:29 AM ET on the scheduled day of the data release
+        (December 10, 2026). Please note: the Expiration Value is the single-decimal
+        value published at the Source Agency. In the case of a delay in data caused
+        by a federal government shutdown impacting the reliability of the Source Agency,
+        the market\u2019s latest Expiration Date will be extended to the sooner of
+        the release of the Underlying or six months after the end of the government
+        shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"-0.3%\",\"ticker\":\"KXCPI-26NOV-T-0.3\",\"title\":\"Will
+        CPI rise more than -0.3% in November 2026?\",\"updated_time\":\"2026-11-05T15:00:00.243347Z\",\"volume_24h_fp\":\"1742.01\",\"volume_fp\":\"1938.01\",\"yes_ask_dollars\":\"0.9400\",\"yes_ask_size_fp\":\"1256.01\",\"yes_bid_dollars\":\"0.9200\",\"yes_bid_size_fp\":\"2.00\",\"yes_sub_title\":\"Above
+        -0.3%\"},{\"can_close_early\":true,\"close_time\":\"2026-12-10T13:29:00Z\",\"created_time\":\"2026-11-05T14:29:44.997299Z\",\"event_ticker\":\"KXCPI-26NOV\",\"exchange_index\":0,\"expected_expiration_time\":\"2026-12-10T14:56:00Z\",\"expiration_time\":\"2027-03-11T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":-0.2,\"last_price_dollars\":\"0.8300\",\"latest_expiration_time\":\"2027-03-11T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.1500\",\"no_bid_dollars\":\"0.0700\",\"no_sub_title\":\"Above
+        -0.2%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2026-12-10T14:56:00Z\",\"open_interest_fp\":\"1467.15\",\"open_time\":\"2026-11-05T15:00:00Z\",\"previous_price_dollars\":\"0.8900\",\"previous_yes_ask_dollars\":\"0.9100\",\"previous_yes_bid_dollars\":\"0.9000\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than -0.2% (single-decimal)
+        in November 2026, then the market resolves to Yes.\",\"rules_secondary\":\"The
+        market will always close at 8:29 AM ET on the scheduled day of the data release
+        (December 10, 2026). Please note: the Expiration Value is the single-decimal
+        value published at the Source Agency. In the case of a delay in data caused
+        by a federal government shutdown impacting the reliability of the Source Agency,
+        the market\u2019s latest Expiration Date will be extended to the sooner of
+        the release of the Underlying or six months after the end of the government
+        shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"-0.2%\",\"ticker\":\"KXCPI-26NOV-T-0.2\",\"title\":\"Will
+        CPI rise more than -0.2% in November 2026?\",\"updated_time\":\"2026-11-05T15:00:00.243347Z\",\"volume_24h_fp\":\"2127.69\",\"volume_fp\":\"2827.69\",\"yes_ask_dollars\":\"0.9300\",\"yes_ask_size_fp\":\"800.07\",\"yes_bid_dollars\":\"0.8500\",\"yes_bid_size_fp\":\"64.00\",\"yes_sub_title\":\"Above
+        -0.2%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.9,\"last_price_dollars\":\"0.0400\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9700\",\"no_bid_dollars\":\"0.9600\",\"no_sub_title\":\"Above
+        0.9%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"7459.00\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.0400\",\"previous_yes_ask_dollars\":\"0.0400\",\"previous_yes_bid_dollars\":\"0.0300\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.9% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.9%\",\"ticker\":\"KXCPI-26DEC-T0.9\",\"title\":\"Will
+        CPI rise more than 0.9% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"0.00\",\"volume_fp\":\"12557.00\",\"yes_ask_dollars\":\"0.0400\",\"yes_ask_size_fp\":\"5010.00\",\"yes_bid_dollars\":\"0.0300\",\"yes_bid_size_fp\":\"4447.00\",\"yes_sub_title\":\"Above
+        0.9%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.8,\"last_price_dollars\":\"0.0400\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9700\",\"no_bid_dollars\":\"0.9500\",\"no_sub_title\":\"Above
+        0.8%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"13476.00\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.0400\",\"previous_yes_ask_dollars\":\"0.0500\",\"previous_yes_bid_dollars\":\"0.0400\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.8% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.8%\",\"ticker\":\"KXCPI-26DEC-T0.8\",\"title\":\"Will
+        CPI rise more than 0.8% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"0.00\",\"volume_fp\":\"20986.00\",\"yes_ask_dollars\":\"0.0500\",\"yes_ask_size_fp\":\"3358.31\",\"yes_bid_dollars\":\"0.0300\",\"yes_bid_size_fp\":\"3315.00\",\"yes_sub_title\":\"Above
+        0.8%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.7,\"last_price_dollars\":\"0.0400\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9700\",\"no_bid_dollars\":\"0.9600\",\"no_sub_title\":\"Above
+        0.7%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"7463.49\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.0400\",\"previous_yes_ask_dollars\":\"0.0400\",\"previous_yes_bid_dollars\":\"0.0300\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.7% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.7%\",\"ticker\":\"KXCPI-26DEC-T0.7\",\"title\":\"Will
+        CPI rise more than 0.7% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"0.00\",\"volume_fp\":\"13166.49\",\"yes_ask_dollars\":\"0.0400\",\"yes_ask_size_fp\":\"0.46\",\"yes_bid_dollars\":\"0.0300\",\"yes_bid_size_fp\":\"3107.36\",\"yes_sub_title\":\"Above
+        0.7%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.6,\"last_price_dollars\":\"0.0700\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9600\",\"no_bid_dollars\":\"0.8800\",\"no_sub_title\":\"Above
+        0.6%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"6979.47\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.0700\",\"previous_yes_ask_dollars\":\"0.0700\",\"previous_yes_bid_dollars\":\"0.0600\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.6% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.6%\",\"ticker\":\"KXCPI-26DEC-T0.6\",\"title\":\"Will
+        CPI rise more than 0.6% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"0.00\",\"volume_fp\":\"13395.66\",\"yes_ask_dollars\":\"0.1200\",\"yes_ask_size_fp\":\"42.58\",\"yes_bid_dollars\":\"0.0400\",\"yes_bid_size_fp\":\"14.00\",\"yes_sub_title\":\"Above
+        0.6%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.5,\"last_price_dollars\":\"0.1300\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9400\",\"no_bid_dollars\":\"0.9300\",\"no_sub_title\":\"Above
+        0.5%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"8472.11\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.0900\",\"previous_yes_ask_dollars\":\"0.1100\",\"previous_yes_bid_dollars\":\"0.0600\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.5% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.5%\",\"ticker\":\"KXCPI-26DEC-T0.5\",\"title\":\"Will
+        CPI rise more than 0.5% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"334.00\",\"volume_fp\":\"13848.89\",\"yes_ask_dollars\":\"0.0700\",\"yes_ask_size_fp\":\"1.00\",\"yes_bid_dollars\":\"0.0600\",\"yes_bid_size_fp\":\"3347.00\",\"yes_sub_title\":\"Above
+        0.5%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.4,\"last_price_dollars\":\"0.1800\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9400\",\"no_bid_dollars\":\"0.9300\",\"no_sub_title\":\"Above
+        0.4%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"5256.83\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.2100\",\"previous_yes_ask_dollars\":\"0.1800\",\"previous_yes_bid_dollars\":\"0.1400\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.4% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.4%\",\"ticker\":\"KXCPI-26DEC-T0.4\",\"title\":\"Will
+        CPI rise more than 0.4% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"296.00\",\"volume_fp\":\"14497.97\",\"yes_ask_dollars\":\"0.0700\",\"yes_ask_size_fp\":\"1.00\",\"yes_bid_dollars\":\"0.0600\",\"yes_bid_size_fp\":\"88.84\",\"yes_sub_title\":\"Above
+        0.4%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.3,\"last_price_dollars\":\"0.3500\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.8400\",\"no_bid_dollars\":\"0.7100\",\"no_sub_title\":\"Above
+        0.3%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"2715.95\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.3500\",\"previous_yes_ask_dollars\":\"0.3100\",\"previous_yes_bid_dollars\":\"0.1800\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.3% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.3%\",\"ticker\":\"KXCPI-26DEC-T0.3\",\"title\":\"Will
+        CPI rise more than 0.3% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"0.00\",\"volume_fp\":\"8869.70\",\"yes_ask_dollars\":\"0.2900\",\"yes_ask_size_fp\":\"14.00\",\"yes_bid_dollars\":\"0.1600\",\"yes_bid_size_fp\":\"1011.00\",\"yes_sub_title\":\"Above
+        0.3%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.2,\"last_price_dollars\":\"0.5400\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.8200\",\"no_bid_dollars\":\"0.4600\",\"no_sub_title\":\"Above
+        0.2%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"3274.19\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.6100\",\"previous_yes_ask_dollars\":\"0.6000\",\"previous_yes_bid_dollars\":\"0.4200\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.2% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.2%\",\"ticker\":\"KXCPI-26DEC-T0.2\",\"title\":\"Will
+        CPI rise more than 0.2% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"1258.59\",\"volume_fp\":\"5835.00\",\"yes_ask_dollars\":\"0.5400\",\"yes_ask_size_fp\":\"13.00\",\"yes_bid_dollars\":\"0.1800\",\"yes_bid_size_fp\":\"2.00\",\"yes_sub_title\":\"Above
+        0.2%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.1,\"last_price_dollars\":\"0.6000\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.4700\",\"no_bid_dollars\":\"0.3700\",\"no_sub_title\":\"Above
+        0.1%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"2133.64\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.8000\",\"previous_yes_ask_dollars\":\"0.8000\",\"previous_yes_bid_dollars\":\"0.5600\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.1% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.1%\",\"ticker\":\"KXCPI-26DEC-T0.1\",\"title\":\"Will
+        CPI rise more than 0.1% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"772.62\",\"volume_fp\":\"5083.50\",\"yes_ask_dollars\":\"0.6300\",\"yes_ask_size_fp\":\"54.80\",\"yes_bid_dollars\":\"0.5300\",\"yes_bid_size_fp\":\"135.00\",\"yes_sub_title\":\"Above
+        0.1%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":-0.1,\"last_price_dollars\":\"0.9500\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.0800\",\"no_bid_dollars\":\"0.0500\",\"no_sub_title\":\"Above
+        -0.1%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"3973.21\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.9500\",\"previous_yes_ask_dollars\":\"0.9600\",\"previous_yes_bid_dollars\":\"0.9500\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than -0.1% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"-0.1%\",\"ticker\":\"KXCPI-26DEC-T-0.1\",\"title\":\"Will
+        CPI rise more than -0.1% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"402.00\",\"volume_fp\":\"13962.10\",\"yes_ask_dollars\":\"0.9500\",\"yes_ask_size_fp\":\"14.00\",\"yes_bid_dollars\":\"0.9200\",\"yes_bid_size_fp\":\"46.30\",\"yes_sub_title\":\"Above
+        -0.1%\"},{\"can_close_early\":true,\"close_time\":\"2027-01-13T13:29:00Z\",\"created_time\":\"2026-09-17T15:05:43.163708Z\",\"event_ticker\":\"KXCPI-26DEC\",\"exchange_index\":0,\"expected_expiration_time\":\"2027-01-13T14:56:00Z\",\"expiration_time\":\"2027-04-14T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0,\"last_price_dollars\":\"0.8000\",\"latest_expiration_time\":\"2027-04-14T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.2200\",\"no_bid_dollars\":\"0.1700\",\"no_sub_title\":\"Above
+        0.0%\",\"notional_value_dollars\":\"1.0000\",\"occurrence_datetime\":\"2027-01-13T14:56:00Z\",\"open_interest_fp\":\"7164.72\",\"open_time\":\"2026-09-17T15:30:00Z\",\"previous_price_dollars\":\"0.8900\",\"previous_yes_ask_dollars\":\"0.8900\",\"previous_yes_bid_dollars\":\"0.8800\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.0% in December 2026,
+        as reported to one decimal place, then the market resolves to Yes.\",\"rules_secondary\":\"Please
+        note: the Expiration Value is the single-decimal value published at the Source
+        Agency. In the case of a delay in data caused by a federal government shutdown
+        impacting the reliability of the Source Agency, the market\u2019s latest Expiration
+        Date will be extended to the sooner of the release of the Underlying or six
+        months after the end of the government shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.0%\",\"ticker\":\"KXCPI-26DEC-T0.0\",\"title\":\"Will
+        CPI rise more than 0.0% in December 2026?\",\"updated_time\":\"2026-10-16T21:21:25.303611Z\",\"volume_24h_fp\":\"2757.72\",\"volume_fp\":\"15012.84\",\"yes_ask_dollars\":\"0.8300\",\"yes_ask_size_fp\":\"25.64\",\"yes_bid_dollars\":\"0.7800\",\"yes_bid_size_fp\":\"1.00\",\"yes_sub_title\":\"Above
+        0.0%\"},{\"can_close_early\":true,\"close_time\":\"2026-12-10T13:29:00Z\",\"created_time\":\"2026-02-19T23:56:14.654961Z\",\"event_ticker\":\"KXCPI-26NOV\",\"exchange_index\":0,\"expected_expiration_time\":\"2026-12-10T14:56:00Z\",\"expiration_time\":\"2027-03-11T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.5,\"last_price_dollars\":\"0.0200\",\"latest_expiration_time\":\"2027-03-11T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9900\",\"no_bid_dollars\":\"0.9800\",\"no_sub_title\":\"Above
+        0.5%\",\"notional_value_dollars\":\"1.0000\",\"open_interest_fp\":\"13771.87\",\"open_time\":\"2026-02-20T15:00:00Z\",\"previous_price_dollars\":\"0.0300\",\"previous_yes_ask_dollars\":\"0.0300\",\"previous_yes_bid_dollars\":\"0.0200\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.5% (single-decimal)
+        in November 2026, then the market resolves to Yes.\",\"rules_secondary\":\"The
+        market will always close at 8:29 AM ET on the scheduled day of the data release
+        (December 10, 2026). Please note: the Expiration Value is the single-decimal
+        value published at the Source Agency. In the case of a delay in data caused
+        by a federal government shutdown impacting the reliability of the Source Agency,
+        the market\u2019s latest Expiration Date will be extended to the sooner of
+        the release of the Underlying or six months after the end of the government
+        shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.5%\",\"ticker\":\"KXCPI-26NOV-T0.5\",\"title\":\"Will
+        CPI rise more than 0.5% in November 2026?\",\"updated_time\":\"2026-10-16T21:20:56.357305Z\",\"volume_24h_fp\":\"7500.00\",\"volume_fp\":\"24624.80\",\"yes_ask_dollars\":\"0.0200\",\"yes_ask_size_fp\":\"9980.01\",\"yes_bid_dollars\":\"0.0100\",\"yes_bid_size_fp\":\"2001.00\",\"yes_sub_title\":\"Above
+        0.5%\"},{\"can_close_early\":true,\"close_time\":\"2026-12-10T13:29:00Z\",\"created_time\":\"2026-02-19T23:56:14.654961Z\",\"event_ticker\":\"KXCPI-26NOV\",\"exchange_index\":0,\"expected_expiration_time\":\"2026-12-10T14:56:00Z\",\"expiration_time\":\"2027-03-11T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.4,\"last_price_dollars\":\"0.0300\",\"latest_expiration_time\":\"2027-03-11T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9800\",\"no_bid_dollars\":\"0.9700\",\"no_sub_title\":\"Above
+        0.4%\",\"notional_value_dollars\":\"1.0000\",\"open_interest_fp\":\"11557.91\",\"open_time\":\"2026-02-20T15:00:00Z\",\"previous_price_dollars\":\"0.0400\",\"previous_yes_ask_dollars\":\"0.0500\",\"previous_yes_bid_dollars\":\"0.0400\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.4% (single-decimal)
+        in November 2026, then the market resolves to Yes.\",\"rules_secondary\":\"The
+        market will always close at 8:29 AM ET on the scheduled day of the data release
+        (December 10, 2026). Please note: the Expiration Value is the single-decimal
+        value published at the Source Agency. In the case of a delay in data caused
+        by a federal government shutdown impacting the reliability of the Source Agency,
+        the market\u2019s latest Expiration Date will be extended to the sooner of
+        the release of the Underlying or six months after the end of the government
+        shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.4%\",\"ticker\":\"KXCPI-26NOV-T0.4\",\"title\":\"Will
+        CPI rise more than 0.4% in November 2026?\",\"updated_time\":\"2026-10-16T21:20:56.357305Z\",\"volume_24h_fp\":\"70.00\",\"volume_fp\":\"23116.41\",\"yes_ask_dollars\":\"0.0300\",\"yes_ask_size_fp\":\"1.00\",\"yes_bid_dollars\":\"0.0200\",\"yes_bid_size_fp\":\"2965.50\",\"yes_sub_title\":\"Above
+        0.4%\"},{\"can_close_early\":true,\"close_time\":\"2026-12-10T13:29:00Z\",\"created_time\":\"2026-02-19T23:56:14.654961Z\",\"event_ticker\":\"KXCPI-26NOV\",\"exchange_index\":0,\"expected_expiration_time\":\"2026-12-10T14:56:00Z\",\"expiration_time\":\"2027-03-11T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.3,\"last_price_dollars\":\"0.0500\",\"latest_expiration_time\":\"2027-03-11T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9800\",\"no_bid_dollars\":\"0.9500\",\"no_sub_title\":\"Above
+        0.3%\",\"notional_value_dollars\":\"1.0000\",\"open_interest_fp\":\"12362.75\",\"open_time\":\"2026-02-20T15:00:00Z\",\"previous_price_dollars\":\"0.0400\",\"previous_yes_ask_dollars\":\"0.0700\",\"previous_yes_bid_dollars\":\"0.0400\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.3% (single-decimal)
+        in November 2026, then the market resolves to Yes.\",\"rules_secondary\":\"The
+        market will always close at 8:29 AM ET on the scheduled day of the data release
+        (December 10, 2026). Please note: the Expiration Value is the single-decimal
+        value published at the Source Agency. In the case of a delay in data caused
+        by a federal government shutdown impacting the reliability of the Source Agency,
+        the market\u2019s latest Expiration Date will be extended to the sooner of
+        the release of the Underlying or six months after the end of the government
+        shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.3%\",\"ticker\":\"KXCPI-26NOV-T0.3\",\"title\":\"Will
+        CPI rise more than 0.3% in November 2026?\",\"updated_time\":\"2026-10-16T21:20:56.357305Z\",\"volume_24h_fp\":\"2152.00\",\"volume_fp\":\"20365.19\",\"yes_ask_dollars\":\"0.0500\",\"yes_ask_size_fp\":\"139.20\",\"yes_bid_dollars\":\"0.0200\",\"yes_bid_size_fp\":\"4170.00\",\"yes_sub_title\":\"Above
+        0.3%\"},{\"can_close_early\":true,\"close_time\":\"2026-12-10T13:29:00Z\",\"created_time\":\"2026-02-19T23:56:14.654961Z\",\"event_ticker\":\"KXCPI-26NOV\",\"exchange_index\":0,\"expected_expiration_time\":\"2026-12-10T14:56:00Z\",\"expiration_time\":\"2027-03-11T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.2,\"last_price_dollars\":\"0.0700\",\"latest_expiration_time\":\"2027-03-11T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.9500\",\"no_bid_dollars\":\"0.9300\",\"no_sub_title\":\"Above
+        0.2%\",\"notional_value_dollars\":\"1.0000\",\"open_interest_fp\":\"16366.89\",\"open_time\":\"2026-02-20T15:00:00Z\",\"previous_price_dollars\":\"0.1400\",\"previous_yes_ask_dollars\":\"0.1400\",\"previous_yes_bid_dollars\":\"0.0900\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.2% (single-decimal)
+        in November 2026, then the market resolves to Yes.\",\"rules_secondary\":\"The
+        market will always close at 8:29 AM ET on the scheduled day of the data release
+        (December 10, 2026). Please note: the Expiration Value is the single-decimal
+        value published at the Source Agency. In the case of a delay in data caused
+        by a federal government shutdown impacting the reliability of the Source Agency,
+        the market\u2019s latest Expiration Date will be extended to the sooner of
+        the release of the Underlying or six months after the end of the government
+        shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.2%\",\"ticker\":\"KXCPI-26NOV-T0.2\",\"title\":\"Will
+        CPI rise more than 0.2% in November 2026?\",\"updated_time\":\"2026-10-16T21:20:56.357305Z\",\"volume_24h_fp\":\"8297.70\",\"volume_fp\":\"29216.11\",\"yes_ask_dollars\":\"0.0700\",\"yes_ask_size_fp\":\"2443.46\",\"yes_bid_dollars\":\"0.0500\",\"yes_bid_size_fp\":\"2329.00\",\"yes_sub_title\":\"Above
+        0.2%\"},{\"can_close_early\":true,\"close_time\":\"2026-12-10T13:29:00Z\",\"created_time\":\"2026-02-19T23:56:14.654961Z\",\"event_ticker\":\"KXCPI-26NOV\",\"exchange_index\":0,\"expected_expiration_time\":\"2026-12-10T14:56:00Z\",\"expiration_time\":\"2027-03-11T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0.1,\"last_price_dollars\":\"0.2000\",\"latest_expiration_time\":\"2027-03-11T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.8300\",\"no_bid_dollars\":\"0.8000\",\"no_sub_title\":\"Above
+        0.1%\",\"notional_value_dollars\":\"1.0000\",\"open_interest_fp\":\"13411.89\",\"open_time\":\"2026-02-20T15:00:00Z\",\"previous_price_dollars\":\"0.2600\",\"previous_yes_ask_dollars\":\"0.3100\",\"previous_yes_bid_dollars\":\"0.2500\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.1% (single-decimal)
+        in November 2026, then the market resolves to Yes.\",\"rules_secondary\":\"The
+        market will always close at 8:29 AM ET on the scheduled day of the data release
+        (December 10, 2026). Please note: the Expiration Value is the single-decimal
+        value published at the Source Agency. In the case of a delay in data caused
+        by a federal government shutdown impacting the reliability of the Source Agency,
+        the market\u2019s latest Expiration Date will be extended to the sooner of
+        the release of the Underlying or six months after the end of the government
+        shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.1%\",\"ticker\":\"KXCPI-26NOV-T0.1\",\"title\":\"Will
+        CPI rise more than 0.1% in November 2026?\",\"updated_time\":\"2026-10-16T21:20:56.357305Z\",\"volume_24h_fp\":\"3888.21\",\"volume_fp\":\"42813.23\",\"yes_ask_dollars\":\"0.2000\",\"yes_ask_size_fp\":\"7563.28\",\"yes_bid_dollars\":\"0.1700\",\"yes_bid_size_fp\":\"1123.15\",\"yes_sub_title\":\"Above
+        0.1%\"},{\"can_close_early\":true,\"close_time\":\"2026-12-10T13:29:00Z\",\"created_time\":\"2026-02-19T23:56:14.654961Z\",\"event_ticker\":\"KXCPI-26NOV\",\"exchange_index\":0,\"expected_expiration_time\":\"2026-12-10T14:56:00Z\",\"expiration_time\":\"2027-03-11T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":-0.1,\"last_price_dollars\":\"0.7300\",\"latest_expiration_time\":\"2027-03-11T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.3600\",\"no_bid_dollars\":\"0.2700\",\"no_sub_title\":\"Above
+        -0.1%\",\"notional_value_dollars\":\"1.0000\",\"open_interest_fp\":\"11463.57\",\"open_time\":\"2026-02-20T15:00:00Z\",\"previous_price_dollars\":\"0.7000\",\"previous_yes_ask_dollars\":\"0.6900\",\"previous_yes_bid_dollars\":\"0.6600\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than -0.1% (single-decimal)
+        in November 2026, then the market resolves to Yes.\",\"rules_secondary\":\"The
+        market will always close at 8:29 AM ET on the scheduled day of the data release
+        (December 10, 2026). Please note: the Expiration Value is the single-decimal
+        value published at the Source Agency. In the case of a delay in data caused
+        by a federal government shutdown impacting the reliability of the Source Agency,
+        the market\u2019s latest Expiration Date will be extended to the sooner of
+        the release of the Underlying or six months after the end of the government
+        shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"-0.1%\",\"ticker\":\"KXCPI-26NOV-T-0.1\",\"title\":\"Will
+        CPI rise more than -0.1% in November 2026?\",\"updated_time\":\"2026-10-16T21:20:56.357305Z\",\"volume_24h_fp\":\"1407.11\",\"volume_fp\":\"29721.46\",\"yes_ask_dollars\":\"0.7300\",\"yes_ask_size_fp\":\"12.61\",\"yes_bid_dollars\":\"0.6400\",\"yes_bid_size_fp\":\"135.00\",\"yes_sub_title\":\"Above
+        -0.1%\"},{\"can_close_early\":true,\"close_time\":\"2026-12-10T13:29:00Z\",\"created_time\":\"2026-02-19T23:56:14.654961Z\",\"event_ticker\":\"KXCPI-26NOV\",\"exchange_index\":0,\"expected_expiration_time\":\"2026-12-10T14:56:00Z\",\"expiration_time\":\"2027-03-11T14:56:00Z\",\"expiration_value\":\"\",\"floor_strike\":0,\"last_price_dollars\":\"0.4200\",\"latest_expiration_time\":\"2027-03-11T14:56:00Z\",\"market_type\":\"binary\",\"no_ask_dollars\":\"0.5900\",\"no_bid_dollars\":\"0.5600\",\"no_sub_title\":\"Above
+        0.0%\",\"notional_value_dollars\":\"1.0000\",\"open_interest_fp\":\"10557.12\",\"open_time\":\"2026-02-20T15:00:00Z\",\"previous_price_dollars\":\"0.6300\",\"previous_yes_ask_dollars\":\"0.4000\",\"previous_yes_bid_dollars\":\"0.3000\",\"price_level_structure\":\"linear_cent\",\"price_ranges\":[{\"end\":\"1.0000\",\"start\":\"0.0000\",\"step\":\"0.0100\"}],\"result\":\"\",\"rules_primary\":\"If
+        the Consumer Price Index (CPI) increases by more than 0.0% (single-decimal)
+        in November 2026, then the market resolves to Yes.\",\"rules_secondary\":\"The
+        market will always close at 8:29 AM ET on the scheduled day of the data release
+        (December 10, 2026). Please note: the Expiration Value is the single-decimal
+        value published at the Source Agency. In the case of a delay in data caused
+        by a federal government shutdown impacting the reliability of the Source Agency,
+        the market\u2019s latest Expiration Date will be extended to the sooner of
+        the release of the Underlying or six months after the end of the government
+        shutdown.\",\"settlement_bounds_type\":\"default\",\"settlement_timer_seconds\":300,\"status\":\"active\",\"strike_type\":\"greater\",\"subtitle\":\"0.0%\",\"ticker\":\"KXCPI-26NOV-T0.0\",\"title\":\"Will
+        CPI rise more than 0.0% in November 2026?\",\"updated_time\":\"2026-10-16T21:20:56.357305Z\",\"volume_24h_fp\":\"3872.89\",\"volume_fp\":\"28281.95\",\"yes_ask_dollars\":\"0.4400\",\"yes_ask_size_fp\":\"361.82\",\"yes_bid_dollars\":\"0.4100\",\"yes_bid_size_fp\":\"2.00\",\"yes_sub_title\":\"Above
+        0.0%\"}]}\n"
+    headers:
+      age:
+      - '1'
+      cache-control:
+      - public, max-age=15
+      connection:
+      - keep-alive
+      content-length:
+      - '37118'
+      content-security-policy:
+      - default-src 'none';
+      content-type:
+      - application/json
+      date:
+      - Tue, 10 Nov 2026 16:12:41 GMT
+      strict-transport-security:
+      - max-age=31536000; includeSubDomains
+      transfer-encoding:
+      - chunked
+      vary:
+      - Accept-Encoding,Accept-Language
+      via:
+      - 1.1 493994fe0c45d3e305554234cc8eafba.cloudfront.net (CloudFront)
+      x-amz-cf-id:
+      - tCxxdHbZk2jiuVJQZOHZzzxeVDyBMV7JcAfnxLfi271N3BNPVZTqlg==
+      x-amz-cf-pop:
+      - ORD56-P17
+      x-cache:
+      - Hit from cloudfront
+      x-content-type-options:
+      - nosniff
+      x-kalshi-cache-hits:
+      - '20'
+    status:
+      code: 200
+      message: OK
+version: 1
