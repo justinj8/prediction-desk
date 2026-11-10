@@ -98,3 +98,13 @@ def test_provider_base_url_and_observation_defaults(monkeypatch: pytest.MonkeyPa
     assert s.fred_api_base == "https://api.stlouisfed.org/fred"
     assert s.alpha_vantage_api_base == "https://www.alphavantage.co"
     assert s.fred_observation_start == date(2015, 1, 1)
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_api_key_is_none(blank: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/db")
+    monkeypatch.setenv("FRED_API_KEY", blank)
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", blank)
+    s = Settings(_env_file=None)
+    assert s.fred_api_key is None
+    assert s.alpha_vantage_api_key is None

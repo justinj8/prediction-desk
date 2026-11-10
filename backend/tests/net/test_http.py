@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import random
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -12,6 +14,7 @@ from prediction_desk.net.http import (
     ProviderHttpError,
     ProviderUnavailable,
     ResilientHttp,
+    _RedactSecrets,
 )
 
 T0 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
@@ -204,3 +207,128 @@ async def test_success_resets_consecutive_failure_count() -> None:
         assert h.calls == 3
         await http.get_json("/x")  # breaker still closed
         assert h.calls == 4
+
+
+async def test_redirect_is_http_error() -> None:
+    h = Harness([httpx.Response(302, headers={"Location": "/elsewhere"})])
+    async with h.client() as http:
+        with pytest.raises(ProviderHttpError) as e:
+            await http.get_json("/x")
+    assert e.value.status == 302 and h.calls == 1
+
+
+async def test_non_json_body_is_provider_error() -> None:
+    h = Harness([httpx.Response(200, text="not json")])
+    async with h.client() as http:
+        with pytest.raises(ProviderError) as e:
+            await http.get_json("/x")
+    assert type(e.value) is ProviderError
+    assert e.value.__context__ is None
+
+
+@pytest.mark.parametrize("body", ["NaN", '{"a": Infinity}', "[-Infinity]"])
+async def test_non_finite_numbers_rejected(body: str) -> None:
+    h = Harness([httpx.Response(200, text=body)])
+    async with h.client() as http:
+        with pytest.raises(ProviderError, match="non-finite"):
+            await http.get_json("/x")
+
+
+async def test_non_transport_httpx_error_wrapped_without_chaining() -> None:
+    h = Harness([httpx.TooManyRedirects("https://x/?api_key=SECRETVALUE")])
+    async with h.client() as http:
+        with pytest.raises(ProviderError) as e:
+            await http.get_json("/x")
+    assert h.calls == 1
+    assert "SECRETVALUE" not in str(e.value)
+    assert e.value.__context__ is None and e.value.__cause__ is None
+
+
+async def _settle() -> None:
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+async def _stale_scenario(stale_ok: bool) -> None:
+    clock = SimClock(T0)
+    gates = {"/stale": asyncio.Event(), "/trial": asyncio.Event()}
+    hits: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path.removeprefix("/api")
+        hits.append(path)
+        if path in gates:
+            await gates[path].wait()
+            return httpx.Response(200 if path == "/trial" or stale_ok else 500, json={})
+        return httpx.Response(500 if path == "/boom" else 200, json={})
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    http = ResilientHttp(
+        "test",
+        "https://example.test/api",
+        clock,
+        transport=httpx.MockTransport(handler),
+        sleep=no_sleep,
+        max_attempts=1,
+        breaker_threshold=1,
+        breaker_cooldown=timedelta(seconds=60),
+    )
+    async with http:
+        stale = asyncio.create_task(http.get_json("/stale"))  # admitted while closed
+        await _settle()
+        with pytest.raises(ProviderUnavailable):
+            await http.get_json("/boom")  # opens the breaker
+        clock.advance(timedelta(seconds=60))
+        trial = asyncio.create_task(http.get_json("/trial"))  # half-open trial starts
+        await _settle()
+        assert hits == ["/stale", "/boom", "/trial"]
+
+        gates["/stale"].set()  # stale call completes mid-trial
+        if stale_ok:
+            await stale
+        else:
+            with pytest.raises(ProviderUnavailable):
+                await stale
+
+        with pytest.raises(ProviderUnavailable):
+            await http.get_json("/second")  # still rejected: no second trial
+        assert "/second" not in hits
+
+        gates["/trial"].set()
+        await trial  # trial resolves and closes the breaker
+        await http.get_json("/after")
+        assert hits[-1] == "/after"
+
+
+async def test_stale_failure_does_not_break_half_open_exclusivity() -> None:
+    await _stale_scenario(stale_ok=False)
+
+
+async def test_stale_success_does_not_close_breaker() -> None:
+    await _stale_scenario(stale_ok=True)
+
+
+def test_redaction_filter_on_crafted_record() -> None:
+    record = logging.LogRecord(
+        "httpx",
+        logging.INFO,
+        __file__,
+        1,
+        'HTTP Request: %s %s "%s"',
+        ("GET", "https://h/x?API_KEY=SECRET123&a=1&apikey=SECRET456", "HTTP/1.1 200 OK"),
+        None,
+    )
+    assert _RedactSecrets().filter(record)
+    text = record.getMessage()
+    assert "SECRET" not in text and "a=1" in text and text.count("REDACTED") == 2
+
+
+async def test_httpx_info_log_is_redacted(caplog: pytest.LogCaptureFixture) -> None:
+    h = Harness([httpx.Response(200, json={})])
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        async with h.client() as http:
+            await http.get_json("/x", {"api_key": "SECRET123", "apikey": "SECRET456"})
+    assert "SECRET123" not in caplog.text and "SECRET456" not in caplog.text
+    assert "REDACTED" in caplog.text
