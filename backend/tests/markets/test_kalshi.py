@@ -138,6 +138,7 @@ async def test_orderbook_inverts_no_bids() -> None:
     assert book.asks[0] == BookLevel(Decimal("0.5100"), Decimal("139.54"))
     assert book.asks[1].price == Decimal("0.5300")
     assert book.ts == T0
+    assert book.venue_ts is None
 
 
 async def test_orderbook_null_sides() -> None:

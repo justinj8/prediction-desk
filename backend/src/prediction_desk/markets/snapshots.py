@@ -50,6 +50,7 @@ async def record_snapshots(
             MarketSnapshot(
                 contract_id=contract.id,
                 ts=book.ts,
+                venue_ts=book.venue_ts,
                 best_bid=None if bid is None else bid.price,
                 best_ask=None if ask is None else ask.price,
                 bid_size=None if bid is None else bid.size,

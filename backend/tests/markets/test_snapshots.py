@@ -33,12 +33,16 @@ class FakeBooks:
 
 
 def _book(
-    bids: list[tuple[str, str]], asks: list[tuple[str, str]], ts: datetime = NOW
+    bids: list[tuple[str, str]],
+    asks: list[tuple[str, str]],
+    ts: datetime = NOW,
+    venue_ts: datetime | None = None,
 ) -> OrderBook:
     return OrderBook(
         tuple(BookLevel(D(p), D(s)) for p, s in bids),
         tuple(BookLevel(D(p), D(s)) for p, s in asks),
         ts,
+        venue_ts,
     )
 
 
@@ -84,6 +88,7 @@ async def test_snapshot_records_best_levels(session: AsyncSession) -> None:
     snap = (await session.execute(select(MarketSnapshot))).scalar_one()
     assert snap.contract_id == c.id
     assert snap.ts == NOW
+    assert snap.venue_ts is None
     assert (snap.best_bid, snap.best_ask) == (D("0.4"), D("0.45"))
     assert (snap.bid_size, snap.ask_size) == (D("10"), D("7"))
     assert snap.book == book.to_json()
@@ -172,3 +177,13 @@ async def test_snapshot_failure_on_one_venue_keeps_other_venue(session: AsyncSes
     assert result.failures == [(kalshi.id, "ProviderError: kalshi: malformed order book: KeyError")]
     snap = (await session.execute(select(MarketSnapshot))).scalar_one()
     assert snap.contract_id == poly.id
+
+
+async def test_snapshot_stores_observed_and_venue_ts(session: AsyncSession) -> None:
+    await _contract(session, "A")
+    venue_ts = NOW - timedelta(seconds=7)
+    book = _book([("0.40", "1100024.031234")], [], venue_ts=venue_ts)
+    await record_snapshots(session, {Venue.KALSHI: FakeBooks({"A": book})}, SimClock(NOW))
+    snap = (await session.execute(select(MarketSnapshot))).scalar_one()
+    assert (snap.ts, snap.venue_ts) == (NOW, venue_ts)
+    assert snap.bid_size == D("1100024.031234")  # Numeric(24, 6): no rounding of real sizes

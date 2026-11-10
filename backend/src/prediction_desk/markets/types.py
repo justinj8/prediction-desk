@@ -60,13 +60,25 @@ class BookLevel:
     size: Decimal
 
 
+def _require_exact_utc(ts: datetime, name: str) -> None:
+    if ts.utcoffset() != timedelta(0):
+        require_utc(ts)  # raises for naive datetimes
+        raise ValueError(f"{name} must be UTC")
+
+
 @dataclass(frozen=True)
 class OrderBook:
-    """YES-side book, both sides best first. Either side may be empty."""
+    """YES-side book, both sides best first. Either side may be empty.
+
+    ``ts`` is when we observed the book (the adapter's ``clock.now()``) for every venue; it is
+    what quote-age gates and as-of replay compare against. ``venue_ts`` is the venue's own
+    timestamp for the book when it publishes one, else None.
+    """
 
     bids: tuple[BookLevel, ...]
     asks: tuple[BookLevel, ...]
     ts: datetime
+    venue_ts: datetime | None = None
 
     def __post_init__(self) -> None:
         for level in (*self.bids, *self.asks):
@@ -80,9 +92,9 @@ class OrderBook:
         for a, b in zip(self.asks, self.asks[1:], strict=False):
             if not a.price < b.price:
                 raise ValueError("asks must be strictly ascending")
-        if self.ts.utcoffset() != timedelta(0):
-            require_utc(self.ts)  # raises for naive datetimes
-            raise ValueError("ts must be UTC")
+        _require_exact_utc(self.ts, "ts")
+        if self.venue_ts is not None:
+            _require_exact_utc(self.venue_ts, "venue_ts")
 
     @property
     def best_bid(self) -> BookLevel | None:

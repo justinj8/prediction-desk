@@ -99,6 +99,7 @@ class EventContract(Base):
             "AND comparator IS NOT NULL AND strike_lo IS NOT NULL)",
             name="mapped_complete",
         ),
+        CheckConstraint("mapping_confidence BETWEEN 0 AND 1", name="confidence_range"),
     )
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
@@ -127,7 +128,10 @@ class EventContract(Base):
 
 class MarketSnapshot(Base):
     """Order-book snapshot. best_bid/best_ask are YES prices; book is best-first
-    {"bids": [[price, size], ...], "asks": [...]} with string values."""
+    {"bids": [[price, size], ...], "asks": [...]} with string values.
+
+    ts is when we observed the book (as-of reads compare against it); venue_ts is the venue's
+    own book timestamp, NULL when the venue publishes none (Kalshi)."""
 
     __tablename__ = "market_snapshots"
     __table_args__ = (Index("ix_market_snapshots_contract_id_ts", "contract_id", "ts"),)
@@ -135,8 +139,9 @@ class MarketSnapshot(Base):
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     contract_id: Mapped[int] = mapped_column(ForeignKey("event_contracts.id"))
     ts: Mapped[datetime] = mapped_column(UTCDateTime())
+    venue_ts: Mapped[datetime | None] = mapped_column(UTCDateTime())
     best_bid: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     best_ask: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
-    bid_size: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
-    ask_size: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    bid_size: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
+    ask_size: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
     book: Mapped[dict[str, Any]] = mapped_column(JSONB)
