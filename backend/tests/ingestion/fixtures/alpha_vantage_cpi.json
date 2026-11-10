@@ -1,0 +1,12 @@
+{
+  "_note": "hand-built from Alpha Vantage CPI docs (R8); replace with a recorded response once ALPHA_VANTAGE_API_KEY exists",
+  "name": "Consumer Price Index for all Urban Consumers",
+  "interval": "monthly",
+  "unit": "index 1982-1984=100",
+  "data": [
+    {"date": "2026-09-01", "value": "324.368"},
+    {"date": "2026-08-01", "value": "323.976"},
+    {"date": "2026-07-01", "value": "."},
+    {"date": "2026-06-01", "value": "322.561"}
+  ]
+}
