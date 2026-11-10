@@ -16,6 +16,7 @@ from typing import Any
 from prediction_desk.clock import Clock
 from prediction_desk.domain.enums import Venue
 from prediction_desk.domain.types import require_utc
+from prediction_desk.markets.mapping import POLYMARKET_EVENT_RULES
 from prediction_desk.markets.types import (
     PARSE_ERRORS,
     BookLevel,
@@ -35,11 +36,8 @@ PAGE_SIZE = 100
 POLYMARKET_TAGS: tuple[str, ...] = ("us-cpi", "fomc")
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
-EVENT_SLUG_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^[a-z]+-inflation-us-annual(-\d+)?$"),
-    re.compile(r"^core-cpi-yoy-[a-z]+-\d{4}(-\d+)?$"),
-    re.compile(r"^fed-decision-in-[a-z]+(-\d+)?$"),
-)
+# Derived from the mapper's single event table: the adapter tracks exactly the events it maps.
+EVENT_SLUG_PATTERNS: tuple[re.Pattern[str], ...] = tuple(r.slug for r in POLYMARKET_EVENT_RULES)
 
 
 def _to_market(raw: Any, event_slug: str, tag: str) -> VenueMarket | None:
