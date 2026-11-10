@@ -43,7 +43,7 @@ async def record_snapshots(
                 MarketRef(contract.venue_market_id, contract.yes_token_id)
             )
         except ProviderError as e:
-            result.failures.append((contract.id, str(e)))
+            result.failures.append((contract.id, f"{type(e).__name__}: {e}"))
             continue
         bid, ask = book.best_bid, book.best_ask
         session.add(

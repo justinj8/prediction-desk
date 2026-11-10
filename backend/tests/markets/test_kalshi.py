@@ -2,10 +2,12 @@ import json
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+import yaml
 
 from prediction_desk.clock import SimClock
 from prediction_desk.domain.enums import Venue
@@ -248,3 +250,126 @@ async def test_null_identity_fields_skipped(caplog: pytest.LogCaptureFixture) ->
     assert caplog.text.count("<unknown>") == 2
     for name in ("NULLEVENT", "EMPTYEVENT", "NULLCLOSE"):
         assert name in caplog.text
+
+
+# ---- totality: every parse/validation failure is a ProviderError --------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        "markets",
+        {"markets": "nope"},
+        {"markets": {"a": 1}},
+        {"markets": [], "cursor": 5},
+    ],
+)
+async def test_list_markets_malformed_body_raises_provider_error(body: Any) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=json.dumps(body))
+
+    with pytest.raises(ProviderError) as exc:
+        await _adapter(_mock(handler)).list_markets("KXCPI")
+    assert exc.value.__cause__ is None
+    assert "nope" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("title", 5), ("title", ["t"]), ("rules_primary", {"x": 1}), ("status", 1)],
+)
+async def test_non_string_text_field_skips_market(
+    field: str, value: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return _json({"markets": [_raw("BADTEXT", **{field: value}), _raw("GOOD")], "cursor": ""})
+
+    with caplog.at_level(logging.WARNING, logger="prediction_desk.markets.kalshi"):
+        markets = await _adapter(_mock(handler)).list_markets("KXCPI")
+    assert [m.market_id for m in markets] == ["GOOD"]
+    assert "BADTEXT" in caplog.text
+
+
+async def test_non_object_market_skipped(caplog: pytest.LogCaptureFixture) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return _json({"markets": ["junk", 3, None, _raw("GOOD")], "cursor": ""})
+
+    with caplog.at_level(logging.WARNING, logger="prediction_desk.markets.kalshi"):
+        markets = await _adapter(_mock(handler)).list_markets("KXCPI")
+    assert [m.market_id for m in markets] == ["GOOD"]
+    assert caplog.text.count("<unknown>") == 3
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        {},
+        {"orderbook": {"yes": []}},
+        {"orderbook_fp": None},
+        {"orderbook_fp": []},
+        {"orderbook_fp": "secret-body-text"},
+        {"orderbook_fp": {"yes_dollars": "x"}},
+        {"orderbook_fp": {"yes_dollars": [["0.4"]]}},
+        {"orderbook_fp": {"yes_dollars": [["abc", "1"]]}},
+        {"orderbook_fp": {"yes_dollars": [["NaN", "1"]]}},
+        {"orderbook_fp": {"yes_dollars": [[["0.4"], "1"]]}},
+        {"orderbook_fp": {"yes_dollars": [["1.5", "1"]]}},
+        {"orderbook_fp": {"yes_dollars": [["0.4", "NaN"]]}},
+        {"orderbook_fp": {"yes_dollars": [["0.4", "-1"]]}},
+        {"orderbook_fp": {"no_dollars": [None]}},
+    ],
+)
+async def test_orderbook_malformed_raises_provider_error(body: Any) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=json.dumps(body))
+
+    with pytest.raises(ProviderError) as exc:
+        await _adapter(_mock(handler)).order_book(MarketRef("X", None))
+    assert exc.value.__cause__ is None
+    assert "secret-body-text" not in str(exc.value)
+
+
+async def test_orderbook_unsorted_raises_provider_error() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        # Descending (best first) instead of Kalshi's ascending order: reversal breaks the book.
+        return _json({"orderbook_fp": {"yes_dollars": [["0.49", "1"], ["0.47", "1"]]}})
+
+    with pytest.raises(ProviderError, match="malformed order book"):
+        await _adapter(_mock(handler)).order_book(MarketRef("X", None))
+
+
+# ---- recorded real order book --------------------------------------------------------------
+
+RECORDED_BOOK_TICKER = "KXCPI-26NOV-T0.0"  # liquid open KXCPI strike at recording time
+BOOK_CASSETTE = (
+    Path(__file__).parent / "cassettes" / "test_kalshi" / "test_recorded_orderbook_best_first.yaml"
+)
+
+
+def _recorded_body() -> dict[str, Any]:
+    cassette = yaml.safe_load(BOOK_CASSETTE.read_text(encoding="utf-8"))
+    (interaction,) = cassette["interactions"]
+    body: dict[str, Any] = json.loads(interaction["response"]["body"]["string"])
+    return body
+
+
+@pytest.mark.vcr
+async def test_recorded_orderbook_best_first() -> None:
+    book = await _adapter().order_book(MarketRef(RECORDED_BOOK_TICKER, None))
+    # Real field names: the container is orderbook_fp with yes_dollars/no_dollars price lists,
+    # each ascending (best last). OrderBook itself enforces best-first after normalization.
+    raw = _recorded_body()["orderbook_fp"]
+    for side in ("yes_dollars", "no_dollars"):
+        prices = [Decimal(p) for p, _ in raw[side]]
+        assert len(prices) >= 2
+        assert prices == sorted(prices)
+        assert len(set(prices)) == len(prices)
+    assert len(book.bids) == len(raw["yes_dollars"])
+    assert len(book.asks) == len(raw["no_dollars"])
+    assert book.best_bid is not None and book.best_ask is not None
+    assert book.best_bid.price == Decimal(raw["yes_dollars"][-1][0])
+    assert book.best_ask.price == 1 - Decimal(raw["no_dollars"][-1][0])
+    assert book.best_bid.price < book.best_ask.price  # not crossed: the NO->YES inversion holds
+    assert book.ts == T0
