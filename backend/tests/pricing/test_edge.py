@@ -126,3 +126,28 @@ def test_best_side_both_unavailable_returns_yes_reason() -> None:
     book = mkbook([lv("0.40", "1")], [lv("0.50", "1")])
     quotes = evaluate_edge(to_prob("0.60"), book, Venue.KALSHI, 10, TS)
     assert best_side(quotes) == Unavailable("insufficient_depth")
+
+
+def test_fee_uses_per_level_sum_when_larger() -> None:
+    # asks 1@0.95 + 1@0.96. Per level: ceil(0.3325)=1 + ceil(0.2688)=1 = 2 cents.
+    # Order level at avg 0.955: ceil(0.07*2*0.955*0.045*100 = 0.6016) = 1 cent. Max is 2.
+    book = mkbook([], [lv("0.95", "1"), lv("0.96", "1")])
+    yes, _ = evaluate_edge(to_prob("0.99"), book, Venue.KALSHI, 2, TS)
+    y = quote(yes)
+    assert y.fee_cents == 2
+    assert y.edge_per_contract == D("0.0250")  # 0.99 - 0.955 - 0.02/2 = 0.025
+
+
+def test_fee_uses_order_level_when_larger() -> None:
+    # asks 1@0.10 + 1@0.90. Per level: ceil(0.63)=1 + ceil(0.63)=1 = 2 cents.
+    # Order level at avg 0.50: ceil(0.07*2*0.25*100 = 3.5) = 4 cents. Max is 4.
+    book = mkbook([], [lv("0.10", "1"), lv("0.90", "1")])
+    yes, _ = evaluate_edge(to_prob("0.99"), book, Venue.KALSHI, 2, TS)
+    assert quote(yes).fee_cents == 4
+
+
+def test_fee_per_level_handles_fractional_take() -> None:
+    # 0.5@0.95 + 1.5@0.96: per level ceil(0.16625)=1 + ceil(0.4032)=1 = 2; order at 0.9575: 1.
+    book = mkbook([], [lv("0.95", "0.5"), lv("0.96", "5")])
+    yes, _ = evaluate_edge(to_prob("0.99"), book, Venue.KALSHI, 2, TS)
+    assert quote(yes).fee_cents == 2

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from functools import cache
 from importlib.resources import files
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
@@ -43,6 +44,8 @@ def _parse_row(row: Any) -> FeeSchedule:
         effective_from = date.fromisoformat(str(row.get("effective_from")))
     except ValueError:
         raise ValueError(f"invalid effective_from: {row.get('effective_from')!r}") from None
+    if kind == "kalshi_quadratic" and "rate" not in row:
+        raise ValueError("kalshi_quadratic requires an explicit rate")
     raw_rate = row.get("rate", "0")
     try:
         if not isinstance(raw_rate, str):
@@ -52,7 +55,16 @@ def _parse_row(row: Any) -> FeeSchedule:
         raise ValueError(f"invalid rate: {raw_rate!r}") from None
     if not rate.is_finite() or rate < 0:
         raise ValueError(f"invalid rate: {raw_rate!r}")
+    if kind == "kalshi_quadratic" and rate == 0:
+        raise ValueError("kalshi_quadratic rate must be > 0")
+    if kind == "zero" and rate != 0:
+        raise ValueError("zero schedule must not have a nonzero rate")
     return FeeSchedule(venue, effective_from, cast(FeeKind, kind), rate)
+
+
+@cache
+def _packaged_schedules() -> tuple[FeeSchedule, ...]:
+    return tuple(load_fee_schedules())
 
 
 def load_fee_schedules(text: str | None = None) -> list[FeeSchedule]:
@@ -80,7 +92,7 @@ def schedule_for(
     venue: Venue, asof: datetime, schedules: Sequence[FeeSchedule] | None = None
 ) -> FeeSchedule:
     """Latest schedule for ``venue`` with ``effective_from`` <= the as-of New York date."""
-    pool = load_fee_schedules() if schedules is None else schedules
+    pool = _packaged_schedules() if schedules is None else schedules
     day = require_utc(asof).astimezone(_NY).date()
     eligible = [s for s in pool if s.venue == venue and s.effective_from <= day]
     if not eligible:
@@ -98,3 +110,19 @@ def fee_cents(schedule: FeeSchedule, price: Decimal, qty: int) -> int:
         return 0
     raw = schedule.rate * qty * price * (_ONE - price) * 100
     return int(raw.to_integral_value(ROUND_CEILING))
+
+
+def fill_fee_cents(
+    schedule: FeeSchedule, avg_price: Decimal, qty: int, levels: Sequence[tuple[Decimal, Decimal]]
+) -> int:
+    """Fee for a multi-level fill, never understated: the larger of the order-level fee at the
+    average price and the sum of per-level fees (``levels`` are ``(price, take)``; ``take`` may
+    be fractional)."""
+    order_fee = fee_cents(schedule, avg_price, qty)
+    if schedule.kind == "zero":
+        return 0
+    per_level = sum(
+        int((schedule.rate * take * p * (_ONE - p) * 100).to_integral_value(ROUND_CEILING))
+        for p, take in levels
+    )
+    return max(order_fee, per_level)

@@ -9,7 +9,7 @@ from prediction_desk.domain.enums import Venue
 from prediction_desk.domain.types import Prob, to_prob
 from prediction_desk.markets.types import OrderBook
 from prediction_desk.pricing.book import buy_fill, side_levels
-from prediction_desk.pricing.fees import fee_cents, schedule_for
+from prediction_desk.pricing.fees import fill_fee_cents, schedule_for
 
 Side = Literal["yes", "no"]
 _EDGE_QUANTUM = Decimal("0.0001")
@@ -42,7 +42,7 @@ def _side_edge(
     if fill is None:
         return Unavailable("insufficient_depth")
     best = levels[0].price
-    fee = fee_cents(schedule_for(venue, asof), fill.avg_price, qty)
+    fee = fill_fee_cents(schedule_for(venue, asof), fill.avg_price, qty, fill.levels)
     slippage = int(((fill.avg_price - best) * qty * 100).to_integral_value(ROUND_HALF_UP))
     edge = (fair - fill.avg_price - Decimal(fee) / (100 * qty)).quantize(
         _EDGE_QUANTUM, rounding=ROUND_FLOOR

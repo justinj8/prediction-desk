@@ -13,6 +13,7 @@ class Fill:
     avg_price: Decimal
     worst_price: Decimal
     qty: int
+    levels: tuple[tuple[Decimal, Decimal], ...]  # (price, take) per consumed level
 
 
 def walk(levels: Sequence[BookLevel], qty: int) -> Fill | None:
@@ -22,15 +23,17 @@ def walk(levels: Sequence[BookLevel], qty: int) -> Fill | None:
     remaining = Decimal(qty)
     cost = Decimal(0)
     worst = Decimal(0)
+    taken: list[tuple[Decimal, Decimal]] = []
     for level in levels:
         take = min(level.size, remaining)
         if take <= 0:
             continue
         cost += level.price * take
         worst = level.price
+        taken.append((level.price, take))
         remaining -= take
         if remaining == 0:
-            return Fill(avg_price=cost / qty, worst_price=worst, qty=qty)
+            return Fill(avg_price=cost / qty, worst_price=worst, qty=qty, levels=tuple(taken))
     return None
 
 
