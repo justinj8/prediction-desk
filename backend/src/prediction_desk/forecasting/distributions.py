@@ -20,7 +20,8 @@ _ZERO = Prob(Decimal("0.00000"))
 
 
 class Distribution(Protocol):
-    family: str
+    @property
+    def family(self) -> str: ...
 
     def prob_between(self, lower: Decimal | None, upper: Decimal | None) -> Prob:
         """P(lower <= X < upper); None means unbounded on that side."""
