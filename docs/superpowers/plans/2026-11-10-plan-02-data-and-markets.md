@@ -761,3 +761,45 @@ Steps:
 - Running `discover_contracts` against the recorded Kalshi and Polymarket cassettes maps every currently listed CPI, NFP and FOMC contract. The only exceptions are ones with a documented `unmapped_reason`.
 - `MacroDataProvider.series_asof` returns revision-correct values for any timestamp.
 - No float reaches the DB or an audit payload, and no API key appears in any committed file.
+
+---
+
+## Execution Outcome and Carry-Forward (added after execution)
+
+Plan 2 was executed with subagent-driven development: each of the 9 tasks got its own task review, then came a whole-branch Opus review, one fix wave, and a scoped re-review. The suite ends at 466 tests (`--record-mode=none --block-network`), with 98% total coverage and 100% on `audit/`. Every Kalshi and Polymarket market in the recorded cassettes maps. The single exception is `KXFEDDECISION-28JAN-*`, which is a documented `no_release`.
+
+**Rulings that amended this plan**
+- **R4.** The Kalshi rules sanity check keys on "more than|above", never on "(single-decimal)". Live rule wording varies.
+- **R6.** A malformed venue market is skipped with a WARNING and does not abort the series. Non-string text fields count as malformed.
+- **R8 (user decision, no API keys).** FRED and Alpha Vantage tests use hand-built fixtures that carry a `_note` key, plus exact request-param assertions. Kalshi and Polymarket use real cassettes, including one real order-book cassette per venue.
+- **R9.** Batch services take an `async_sessionmaker`, own short sessions, make no HTTP call inside a transaction, and roll back on any error. This applies to `ingest_fred_series`, `ingest_alpha_vantage`, `sync_releases`, `discover_contracts` and `record_snapshots`. Readers still take an `AsyncSession`.
+- **R10.** `market_snapshots.ts` is our observed-at time (`clock.now()`) for every venue. The venue's own time goes in `venue_ts`.
+- **R11.** Migration 0003 was edited in place before merge. It gained `venue_ts`, a CHECK that confidence is in [0, 1], and sizes as `Numeric(24,6)`.
+- **R12.** No 2028 FOMC dates were added without verification.
+
+**Requirements carried into later plans**
+- **First session with API keys.** Re-record the FRED and Alpha Vantage fixtures against the live APIs and remove the `_note` keys. While doing so, verify three things: that `published_on >= obs_date` holds, how FRED treats realtime_start in Central time, and the release-10 and release-50 date lists.
+- **Plan 3 (pricing, risk, paper broker).**
+  - Add a `terms_from_row(EventContract) -> ContractTerms` helper.
+  - Compare on the officially reported value rounded to `resolution_precision`.
+  - Kalshi NFP strikes are in jobs, while FRED PAYEMS is in thousands.
+  - The T−5m cutoff uses `release.scheduled_at`, never `close_time`. Polymarket CPI closes about 15h after the release.
+  - Quote age uses `market_snapshots.ts`.
+  - Cap `OrderBook` size magnitude so an absurd venue size becomes a `ProviderError` instead of a DB overflow (R13).
+  - Fold a `rules_text` hash into `inputs_hash`.
+  - Build the unit-of-work helper on the R9 convention. It must refuse AUTOCOMMIT and always use READ COMMITTED.
+  - Plan 1 R15: tighten the C3 "no row written" test.
+- **Plan 3/5.** When `sync_releases` edits a release that has linked contracts, emit a release-change audit event. The release fields in the discovery `_identity` are inert (R14).
+- **Plan 5 (pipeline, scheduler, replay).**
+  - Run order: `ingest_fred_series` (CPIAUCSL, PAYEMS), then `sync_releases`, then `discover_contracts`, then `record_snapshots`.
+  - Discovery must be single-flight.
+  - Use one `ResilientHttp` per provider per process, so the breaker is meaningful.
+  - Treat `ProviderRateLimited` as a stop for the rest of the day.
+  - Never call the live writers (`ingest_alpha_vantage`, `record_snapshots`) under a `SimClock`. Use replay providers and adapters instead, and enforce this structurally.
+  - Offer a bitemporal audit-replay mode (`ingested_at <= asof`).
+  - Handle phantom or cancelled releases.
+  - Add a settled/historical listing method to `VenueAdapter`.
+  - If synthetic replay books are written to `market_snapshots`, add a source flag.
+  - Alpha Vantage daily refetch re-inserts full history, so consider insert-if-changed.
+  - Plan 5/6 verify callers must still fail closed (Plan 1 R13).
+- **Plan 8.** Add a CI wheel-build packaging check (`fomc_meetings.yaml`) and extend the FOMC YAML beyond 2027 from the Fed calendar.
