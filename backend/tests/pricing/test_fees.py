@@ -95,6 +95,9 @@ def test_fee_yaml_packaged() -> None:
 @pytest.mark.parametrize(
     ("entry", "msg"),
     [
+        ('{venue: kalshi, effective_from: "2024-01-01", kind: kalshi_quadratic}', "explicit rate"),
+        ('{venue: kalshi, effective_from: "2024-01-01", kind: kalshi_quadratic, rate: "0"}', "> 0"),
+        ('{venue: kalshi, effective_from: "2024-01-01", kind: zero, rate: "0.07"}', "nonzero"),
         ('{venue: nyse, effective_from: "2024-01-01", kind: zero, rate: "0"}', "venue"),
         ('{venue: kalshi, effective_from: "2024-01-01", kind: flat, rate: "0"}', "kind"),
         ('{venue: kalshi, effective_from: "2024-01-01", kind: zero, rate: "abc"}', "rate"),
@@ -134,3 +137,10 @@ def test_load_rejects_malformed_document() -> None:
 def test_load_rejects_non_mapping_entry() -> None:
     with pytest.raises(ValueError, match="mapping"):
         load_fee_schedules("schedules:\n  - just-a-string\n")
+
+
+def test_packaged_schedules_cached_and_immutable() -> None:
+    from prediction_desk.pricing.fees import _packaged_schedules
+
+    assert _packaged_schedules() is _packaged_schedules()
+    assert isinstance(_packaged_schedules(), tuple)
