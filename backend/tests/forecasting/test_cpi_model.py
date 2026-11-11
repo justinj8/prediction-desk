@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from prediction_desk.db.models import DataObservation, Release
 from prediction_desk.domain.enums import Comparator, DataSource, Measure, Series
-from prediction_desk.forecasting.base import ModelOutput
+from prediction_desk.forecasting.base import BaseModel, ModelOutput
 from prediction_desk.forecasting.cpi import (
     ALPHA,
     MIN_TRAIN,
@@ -35,6 +35,7 @@ from synthetic_macro import (
 D = Decimal
 Seeder = Callable[..., Awaitable[SyntheticCpiTruth]]
 PROVIDER = MacroDataProvider()
+_CONFORMS: BaseModel = CpiModelV1()  # mypy verifies the Protocol
 
 
 def release_for(month: date) -> Release:
@@ -90,6 +91,8 @@ async def test_predict_returns_four_measures(
         "core_cpi_mom.oos_rms",
         "cpi_yoy.r",
         "cpi_yoy.s_m",
+        "cpi_yoy.var_s",
+        "core_cpi_yoy.var_s",
         "core_cpi_yoy.r",
         "core_cpi_yoy.s_m",
     }
@@ -109,6 +112,11 @@ async def test_mom_mean_tracks_known_relationship(
     core = student(out.distributions[Measure.CORE_CPI_MOM])
     assert abs(head.mu - truth.true_headline_mom_mean) < D("0.05")
     assert abs(core.mu - truth.true_core_mom_mean) < D("0.05")
+    # The reference month's conditional mean is far from the unconditional mean, so a
+    # feature-blind (intercept-only) model cannot pass.
+    gap = abs(truth.unconditional_headline_mom_mean - truth.true_headline_mom_mean)
+    assert gap > D("0.15")
+    assert abs(head.mu - truth.true_headline_mom_mean) < gap / 4
 
 
 async def test_sigma_floor_on_noiseless_data(
@@ -127,7 +135,9 @@ async def test_sigma_floor_on_noiseless_data(
     assert D("0.99") < p < D(1)
 
 
-async def test_yoy_is_affine_of_mom(session: AsyncSession, seed_synthetic_cpi: Seeder) -> None:
+async def test_yoy_mean_affine_and_sigma_includes_seasonal_variance(
+    session: AsyncSession, seed_synthetic_cpi: Seeder
+) -> None:
     truth = await seed_synthetic_cpi(session)
     out = await predict(session, truth)
     m = truth.ref_month
@@ -146,14 +156,18 @@ async def test_yoy_is_affine_of_mom(session: AsyncSession, seed_synthetic_cpi: S
         s_m = sum(offsets, D(0)) / 5
         # The seeded seasonal pattern implies offset ~ F_k - F_{k-1}.
         factors = truth.seasonal_pct[nsa_id]
-        assert abs(s_m - (factors[m.month - 1] - factors[m.month - 2])) < D("0.01")
+        assert abs(s_m - (factors[m.month - 1] - factors[m.month - 2])) < D("0.15")
 
         mom = student(out.distributions[mom_measure])
         yoy = student(out.distributions[yoy_measure])
-        b = yoy.sigma / mom.sigma
-        a = yoy.mu - b * mom.mu
-        assert abs(b - r) < D("1e-6")
-        assert abs(a - (100 * (r - 1) + r * s_m)) < D("1e-5")
+        mean_o = s_m
+        var_s = sum(((o - mean_o) ** 2 for o in offsets), D(0)) / 4  # ddof=1, 5 years
+        assert var_s > D("0.0001")  # seeded offsets vary across years
+        # Mean is the affine value; sigma carries the seasonal-offset uncertainty (R6).
+        assert abs(yoy.mu - (100 * (r - 1) + r * (mom.mu + s_m))) < D("1e-5")
+        assert abs(yoy.sigma - r * (mom.sigma**2 + var_s).sqrt()) < D("1e-5")
+        assert yoy.sigma > r * mom.sigma
+        assert abs(D(out.diagnostics[f"{prefix}.var_s"]) - var_s) < D("1e-5")
         assert yoy.nu == mom.nu
         assert abs(D(out.diagnostics[f"{prefix}.r"]) - r) < D("1e-6")
         assert abs(D(out.diagnostics[f"{prefix}.s_m"]) - s_m) < D("1e-5")
@@ -266,6 +280,10 @@ async def test_prediction_ignores_data_after_asof(
     for sid in ("CPIAUCSL", "CPILFESL", "CPIAUCNS", "CPILFENS"):
         for k in (3, 14, 40):
             add(sid, add_months(ref, -k), later + timedelta(days=60), "1")
+    # Late revisions of the YoY inputs: m-1, m-12 and a prior-year Dec/Jan pair used by s_m.
+    for sid in ("CPIAUCSL", "CPILFESL", "CPIAUCNS", "CPILFENS"):
+        for k in (1, 12, 24, 25, 36, 37):
+            add(sid, add_months(ref, -k), later + timedelta(days=90), "777")
     add(SERIES_GAS, date(ref.year, ref.month, 1), later, "9.999")
     add(SERIES_GAS, date(ref.year, ref.month, 29), later, "0.001")
     session.add_all(extra)
@@ -324,3 +342,28 @@ async def test_sample_features_match_definition(
     core_samples = await mom_samples(session, PROVIDER, core=True, asof=truth.asof)
     cs = next(x for x in core_samples if x.month == month)
     assert len(cs.features) == 4  # no gasoline feature for core
+
+
+async def test_sigma_above_floor_equals_unfloored_oos_rms(
+    session: AsyncSession, seed_synthetic_cpi: Seeder
+) -> None:
+    truth = await seed_synthetic_cpi(session, noise_sd=0.4)
+    out = await predict(session, truth)
+    for measure, key in (
+        (Measure.CPI_MOM, "cpi_mom.oos_rms"),
+        (Measure.CORE_CPI_MOM, "core_cpi_mom.oos_rms"),
+    ):
+        rms = D(out.diagnostics[key])
+        assert rms > SIGMA_FLOOR
+        assert student(out.distributions[measure]).sigma == rms
+
+
+@pytest.mark.parametrize("delta", [timedelta(0), timedelta(days=5)])
+async def test_already_published_release_raises(
+    session: AsyncSession, seed_synthetic_cpi: Seeder, delta: timedelta
+) -> None:
+    truth = await seed_synthetic_cpi(session)
+    last = add_months(truth.ref_month, -1)
+    asof = truth.first_vintage[last] + delta
+    with pytest.raises(ValueError, match="release already published as of asof"):
+        await CpiModelV1().predict(session, PROVIDER, release_for(last), asof)

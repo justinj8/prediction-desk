@@ -34,11 +34,12 @@ _Q3 = D("0.001")
 _Q6 = D("0.000001")
 
 HEADLINE_A = D("0.10")
-HEADLINE_B = D("0.02")  # per 1% gasoline change
+HEADLINE_B = D("0.10")  # per 1% gasoline change (swing ~0.3 >> any test tolerance)
 HEADLINE_C = D("0.30")
 CORE_A = D("0.12")
 CORE_C = D("0.35")
 NOISE_SD = 0.03
+SEASONAL_JITTER_SD = 0.05  # per-year drift of the seasonal factor, so NSA-SA offsets vary
 REVISION_PCT = D("2.0")
 
 # Calendar-month seasonal factors in pct (index 0 = January); sums to 0.
@@ -75,6 +76,7 @@ class SyntheticCpiTruth:
     noiseless: bool
     true_headline_mom_mean: Decimal  # noise-free E[headline MoM] for ref_month
     true_core_mom_mean: Decimal
+    unconditional_headline_mom_mean: Decimal  # mean realized headline MoM over the history
     first_print_levels: dict[str, dict[date, Decimal]]  # monthly series, first vintages
     gas_monthly: dict[date, Decimal]  # monthly mean level, ref_month included
     first_vintage: dict[date, datetime]  # month -> first vintage_ts (seeded months)
@@ -129,12 +131,14 @@ async def seed_synthetic_cpi(
     start: date = date(2018, 1, 1),
     noise_seed: int = 7,
     noiseless: bool = False,
+    noise_sd: float = NOISE_SD,
 ) -> SyntheticCpiTruth:
     if months < 12:
         raise ValueError("months must be >= 12")
     start = date(start.year, start.month, 1)
     rng = random.Random(noise_seed)
-    noise_sd = 0.0 if noiseless else NOISE_SD
+    noise_sd = 0.0 if noiseless else noise_sd
+    jitter_rng = random.Random(noise_seed + 1)  # separate stream: jitter is kept when noiseless
     ref_month = add_months(start, months)
     ref_k = ref_month.month
 
@@ -164,6 +168,7 @@ async def seed_synthetic_cpi(
 
     # Noise-free expectation for the reference month.
     true_head = HEADLINE_A + HEADLINE_B * gas_chg(months) + HEADLINE_C * _pct(head[-1], head[-2])
+    uncond = sum((_pct(head[i], head[i - 1]) for i in range(1, months)), D(0)) / (months - 1)
     true_core = CORE_A + CORE_C * _pct(core[-1], core[-2])
 
     # Independent no-signal series.
@@ -174,14 +179,16 @@ async def seed_synthetic_cpi(
         shelter.append((shelter[-1] * (1 + _dec(rng.gauss(0.3, 0.1)) / _HUNDRED)).quantize(_Q3))
 
     month_of = [add_months(start, i) for i in range(months)]
-    nsa_head = [
-        (head[i] * (1 + SEASONAL_HEADLINE[month_of[i].month - 1] / _HUNDRED)).quantize(_Q3)
-        for i in range(months)
-    ]
-    nsa_core = [
-        (core[i] * (1 + SEASONAL_CORE[month_of[i].month - 1] / _HUNDRED)).quantize(_Q3)
-        for i in range(months)
-    ]
+
+    def nsa_of(sa: list[Decimal], factors: tuple[Decimal, ...]) -> list[Decimal]:
+        out = []
+        for i in range(months):
+            f = factors[month_of[i].month - 1] + _dec(jitter_rng.gauss(0, SEASONAL_JITTER_SD))
+            out.append((sa[i] * (1 + f / _HUNDRED)).quantize(_Q3))
+        return out
+
+    nsa_head = nsa_of(head, SEASONAL_HEADLINE)
+    nsa_core = nsa_of(core, SEASONAL_CORE)
 
     series_values: dict[str, list[Decimal]] = {
         "CPIAUCSL": head,
@@ -229,6 +236,7 @@ async def seed_synthetic_cpi(
         noiseless=noiseless,
         true_headline_mom_mean=true_head,
         true_core_mom_mean=true_core,
+        unconditional_headline_mom_mean=uncond,
         first_print_levels={
             sid: {month_of[i]: v for i, v in enumerate(values)}
             for sid, values in series_values.items()
