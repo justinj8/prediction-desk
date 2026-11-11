@@ -101,11 +101,12 @@ def test_month_mean_weekly() -> None:
 async def _feat(
     session: AsyncSession, provider: MacroDataProvider, m: date, t_m: datetime
 ) -> tuple[Decimal, ...] | None:
+    """(previous month level, own level). Own level must be invisible at t_m: 0 if it is."""
     lv = await levels_asof(provider, session, SID, t_m, date(2020, 1, 1))
     prev = date(m.year - 1, 12, 1) if m.month == 1 else date(m.year, m.month - 1, 1)
     if prev not in lv:
         return None
-    return (lv[prev],)
+    return (lv[prev], lv.get(m, D(0)))
 
 
 async def _target(session: AsyncSession, provider: MacroDataProvider, m: date) -> Decimal | None:
@@ -114,12 +115,15 @@ async def _target(session: AsyncSession, provider: MacroDataProvider, m: date) -
 
 async def test_build_samples_never_uses_future_vintages(session: AsyncSession) -> None:
     m1, m2, m3 = date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)
+    fv2, fv3 = ts(2024, 3, 12), ts(2024, 4, 10)
     session.add_all(
         [
-            obs(m1, ts(2024, 2, 13), "100"),  # V1
-            obs(m2, ts(2024, 3, 12), "101"),  # first print of m2
-            obs(m1, ts(2024, 4, 1), "999"),  # V3: revision of m1 AFTER m2's first print
-            obs(m3, ts(2024, 4, 10), "102"),
+            obs(m1, ts(2024, 2, 13), "100"),  # m1 first print
+            obs(m2, fv2, "101"),  # m2 first print
+            obs(m1, fv2, "999"),  # m1 revised in the SAME release as m2's first print
+            obs(m2, ts(2024, 4, 5), "150"),  # m2 revised strictly before m3's first print
+            obs(m3, fv3, "102"),  # m3 first print
+            obs(m2, ts(2024, 4, 20), "888"),  # m2 revised after m3's first print
         ]
     )
     await session.commit()
@@ -135,15 +139,31 @@ async def test_build_samples_never_uses_future_vintages(session: AsyncSession) -
     )
     by_month = {s.month: s for s in samples}
     assert set(by_month) == {m2, m3}
-    assert by_month[m2].features == (D("100"),)  # pre-revision, not 999
+    # m2: pre-revision m1 level (not 999, same vintage_ts as m2's own first print), and
+    # m2's own observation is invisible at t_m.
+    assert by_month[m2].features == (D("100"), D(0))
     assert by_month[m2].target == D("101")
-    assert by_month[m2].asof == ts(2024, 3, 12) - timedelta(microseconds=1)
+    assert by_month[m2].asof == fv2 - timedelta(microseconds=1)
+    # m3: sees the revision of m2 published strictly before its first print (150),
+    # but not the later one (888), and not its own first print.
+    assert by_month[m3].features == (D("150"), D(0))
+    assert by_month[m3].asof == fv3 - timedelta(microseconds=1)
     for s in samples:
         assert s.asof <= outer
         fv = await first_vintage_ts(session, DataSource.FRED, SID, s.month)
         assert fv is not None and s.asof < fv
-    # month 3 sees the revision (published before m3's first print)
-    assert by_month[m3].features == (D("101"),)
+
+
+async def test_build_samples_requires_aware_asof(session: AsyncSession) -> None:
+    with pytest.raises(ValueError, match="timezone"):
+        await build_samples(
+            session,
+            MacroDataProvider(),
+            target_series=SID,
+            target_fn=_target,
+            feature_fn=_feat,
+            asof=datetime(2024, 5, 1),
+        )
 
 
 async def test_build_samples_excludes_unpublished_months(session: AsyncSession) -> None:

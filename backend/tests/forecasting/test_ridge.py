@@ -1,3 +1,4 @@
+import random
 from decimal import Decimal
 
 import numpy as np
@@ -99,3 +100,58 @@ def test_oos_sigma_rms_window() -> None:
 def test_oos_sigma_empty_raises() -> None:
     with pytest.raises(ValueError):
         oos_sigma([], 5, D("0.01"))
+
+
+def _noisy(n: int = 12) -> tuple[list[list[Decimal]], list[Decimal]]:
+    rng = random.Random(7)
+    X = [[D(i), D(rng.randint(0, 9))] for i in range(n)]
+    y = [D(2 * i + 1) + D(rng.randint(-50, 50)) / D(10) for i in range(n)]
+    return X, y
+
+
+def test_oos_residuals_match_out_of_sample_definition_exactly() -> None:
+    X, y = _noisy()
+    alpha = D("0.7")
+    res = oos_residuals(X, y, alpha, 5)
+    assert len(res) == len(y) - 5
+    for k, i in enumerate(range(5, len(y))):
+        assert res[k] == y[i] - predict(fit_ridge(X[:i], y[:i], alpha), X[i])
+
+
+def test_oos_residual_perturbation_shifts_only_its_own_residual() -> None:
+    X, y = _noisy()
+    alpha = D("0.7")
+    base = oos_residuals(X, y, alpha, 5)
+    delta = D("3")
+    i = 8
+    y2 = list(y)
+    y2[i] += delta
+    pert = oos_residuals(X, y2, alpha, 5)
+    k = i - 5
+    assert pert[:k] == base[:k]  # earlier residuals unchanged
+    assert pert[k] == base[k] + delta  # own residual shifts by exactly delta
+
+
+def test_oos_residuals_length_mismatch() -> None:
+    with pytest.raises(ValueError):
+        oos_residuals(col([1, 2, 3]), [D(1), D(2)], D(1), 1)
+
+
+@pytest.mark.parametrize("bad", [D("NaN"), D("Infinity"), D("-Infinity")])
+def test_non_finite_rejected(bad: Decimal) -> None:
+    with pytest.raises(ValueError, match="non-finite"):
+        fit_ridge([[D(1)], [bad]], [D(1), D(2)], D(1))
+    with pytest.raises(ValueError, match="non-finite"):
+        fit_ridge([[D(1)], [D(2)]], [D(1), bad], D(1))
+    fit = fit_ridge(col([1, 2, 3]), [D(1), D(2), D(3)], D(1))
+    with pytest.raises(ValueError, match="non-finite"):
+        predict(fit, [bad])
+
+
+def test_singular_system_raises_value_error() -> None:
+    # duplicate columns + alpha=0 -> singular Gram matrix
+    X = [[D(i), D(i)] for i in range(5)]
+    y = [D(i) for i in range(5)]
+    with pytest.raises(ValueError, match="singular") as ei:
+        fit_ridge(X, y, D(0))
+    assert ei.value.__cause__ is None and ei.value.__suppress_context__
