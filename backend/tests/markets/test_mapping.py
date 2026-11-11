@@ -226,7 +226,43 @@ def test_kalshi_unsupported_strike_type() -> None:
     assert map_market(_kalshi(strike_type=None)) == Unmapped("unsupported_strike_type")
 
 
-@pytest.mark.parametrize("floor", [None, "abc", True, float("nan"), D("NaN")])
+@pytest.mark.parametrize(
+    ("floor", "expected"),
+    [("0.3", D("0.3")), ("-0.3", D("-0.3")), ("90000", D("90000")), ("3.25", D("3.25"))],
+)
+def test_kalshi_numeric_string_floor(floor: str, expected: Decimal) -> None:
+    t = map_market(_kalshi(strike_type="greater", floor_strike=floor))
+    assert isinstance(t, ContractTerms) and t.strike_lo == expected
+
+
+@pytest.mark.parametrize(
+    "floor",
+    [
+        None,
+        "abc",
+        True,
+        False,
+        float("nan"),
+        float("inf"),
+        D("NaN"),
+        D("-Infinity"),
+        "NaN",
+        "Infinity",
+        "1e5",
+        "+0.3",
+        " 0.3",
+        "0.3 ",
+        ".3",
+        "3.",
+        "1" * 5000,
+        "0." + "1" * 5000,
+        "1234567890",
+        10**10,
+        D("1E+10"),
+        "",
+        "-",
+    ],
+)
 def test_kalshi_unparseable_floor(floor: Any) -> None:
     m = _kalshi(strike_type="greater", floor_strike=floor)
     assert map_market(m) == Unmapped("unparseable_strike")

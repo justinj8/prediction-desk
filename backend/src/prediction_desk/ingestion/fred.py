@@ -82,8 +82,7 @@ class FredClient:
                     "offset": str(offset),
                 },
             )
-            page = self._page(data)
-            count = int(data["count"])
+            page, count = self._page(data)
             for raw in page:
                 obs = self._to_observation(series_id, raw)
                 if obs is not None:
@@ -125,15 +124,21 @@ class FredClient:
             raise ProviderError("fred", f"no release {release_id}") from None
 
     @staticmethod
-    def _page(data: Any) -> list[dict[str, Any]]:
+    def _page(data: Any) -> tuple[list[dict[str, Any]], int]:
+        """The page's observations and the total count; ProviderError if either is malformed."""
         try:
             page = data["observations"]
-            data["count"]
-        except (KeyError, TypeError):
+            raw_count = data["count"]
+            if not isinstance(page, list) or isinstance(raw_count, bool):
+                raise TypeError("observations must be a list and count an integer")
+            if not isinstance(raw_count, int | str):
+                raise TypeError("count must be an integer")
+            count = int(raw_count)
+            if count < 0:
+                raise ValueError("negative count")
+        except (KeyError, TypeError, ValueError):
             raise ProviderError("fred", "malformed observations response") from None
-        if not isinstance(page, list):
-            raise ProviderError("fred", "malformed observations response")
-        return page
+        return page, count
 
     @staticmethod
     def _to_observation(series_id: str, raw: dict[str, Any]) -> FredObservation | None:
@@ -141,11 +146,14 @@ class FredClient:
             value_str = raw["value"]
             if value_str == ".":
                 return None
+            value = Decimal(value_str)
+            if not value.is_finite():
+                raise ValueError("non-finite value")
             return FredObservation(
                 series_id=series_id,
                 obs_date=date.fromisoformat(raw["date"]),
                 published_on=date.fromisoformat(raw["realtime_start"]),
-                value=Decimal(value_str),
+                value=value,
             )
         except (KeyError, TypeError, ValueError, InvalidOperation):
             raise ProviderError("fred", f"malformed observation for {series_id}") from None
