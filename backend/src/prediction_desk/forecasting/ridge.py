@@ -22,13 +22,19 @@ class RidgeFit:
     scale: FloatArray
 
 
+def _floats(values: Sequence[Decimal], what: str) -> list[float]:
+    if any(not v.is_finite() for v in values):
+        raise ValueError(f"{what} contains a non-finite value")
+    return [float(v) for v in values]
+
+
 def _matrix(X: Sequence[Sequence[Decimal]]) -> FloatArray:
     if len(X) == 0:
         raise ValueError("X is empty")
     width = len(X[0])
     if width == 0 or any(len(row) != width for row in X):
         raise ValueError("X rows must be non-empty and of equal length")
-    return np.array([[float(v) for v in row] for row in X], dtype=np.float64)
+    return np.array([_floats(row, "X") for row in X], dtype=np.float64)
 
 
 def fit_ridge(X: Sequence[Sequence[Decimal]], y: Sequence[Decimal], alpha: Decimal) -> RidgeFit:
@@ -38,19 +44,22 @@ def fit_ridge(X: Sequence[Sequence[Decimal]], y: Sequence[Decimal], alpha: Decim
     Xf = _matrix(X)
     if len(y) != Xf.shape[0]:
         raise ValueError(f"len(X)={Xf.shape[0]} != len(y)={len(y)}")
-    yf = np.array([float(v) for v in y], dtype=np.float64)
+    yf = np.array(_floats(y, "y"), dtype=np.float64)
     mean = Xf.mean(axis=0)
     scale = Xf.std(axis=0, ddof=0)
     scale = np.where(scale == 0.0, 1.0, scale)
     Xs = (Xf - mean) / scale
     y_bar = float(yf.mean())
     gram = Xs.T @ Xs + float(alpha) * np.eye(Xs.shape[1])
-    coef = np.linalg.solve(gram, Xs.T @ (yf - y_bar))
+    try:
+        coef = np.linalg.solve(gram, Xs.T @ (yf - y_bar))
+    except np.linalg.LinAlgError:
+        raise ValueError("ridge system is singular; increase alpha") from None
     return RidgeFit(coef=coef, intercept=y_bar, mean=mean, scale=scale)
 
 
 def predict(fit: RidgeFit, x: Sequence[Decimal]) -> Decimal:
-    xf = np.array([float(v) for v in x], dtype=np.float64)
+    xf = np.array(_floats(x, "x"), dtype=np.float64)
     if xf.shape != fit.mean.shape:
         raise ValueError(f"expected {fit.mean.shape[0]} features, got {xf.shape[0]}")
     value = fit.intercept + float(((xf - fit.mean) / fit.scale) @ fit.coef)

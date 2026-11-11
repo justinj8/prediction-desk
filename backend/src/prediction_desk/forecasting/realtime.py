@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from prediction_desk.db.models import DataObservation
 from prediction_desk.domain.enums import DataSource
+from prediction_desk.domain.types import require_utc
 from prediction_desk.ingestion.provider import MacroDataProvider
 
 _NY = ZoneInfo("America/New_York")
@@ -132,6 +133,7 @@ async def build_samples(
     lookback_months: int = 96,
 ) -> list[Sample]:
     """Ascending point-in-time samples for months first published at or before asof."""
+    asof = require_utc(asof)
     end = _month_index(asof.astimezone(_NY).date())
     samples: list[Sample] = []
     for idx in range(end - lookback_months, end + 1):
