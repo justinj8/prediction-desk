@@ -1,6 +1,6 @@
 """Synthetic point-in-time macro data with a known generating process (ruling R2).
 
-Shared by the model tests (CPI now; NFP and rates seeders are added by their tasks).
+Shared by the model tests (CPI, NFP; the rates seeder is added by its task).
 Floats are fine here: this is test-data generation, never a model or persisted path.
 
 CPI design (month index i = 0 .. months-1; the *reference month* is index `months`, which is
@@ -245,4 +245,155 @@ async def seed_synthetic_cpi(
         first_vintage=first_vintage,
         seasonal_pct={"CPIAUCNS": SEASONAL_HEADLINE, "CPILFENS": SEASONAL_CORE},
         revision=SyntheticRevision("CPIAUCSL", month_of[rev_i], rev_vts, head[rev_i], revised),
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# NFP design (month index i = 0 .. months-1 published; the reference month is index `months`,
+# left unpublished). All NFP quantities are in THOUSANDS except raw FRED ICSA / ADPWNUSNERSA
+# observations, which are in persons (so the model must divide by 1000).
+#
+#   c_i = A + B1 * c_{i-1} + B2 * dICSA_i + B3 * dADP_i + B4 * dJOLTS_i + noise_i
+#
+# dICSA_i / dADP_i are changes of monthly-mean levels (weekly obs on days 1/8/15/22 all equal
+# the month's level), dJOLTS_i = J[i-2] - J[i-3]. PAYEMS level L_i = L_{i-1} + c_i, first
+# published on the 7th of the following month. JOLTS month k is published on the 5th of k+2.
+# The reference month's ICSA / ADP changes are forced to extremes so the conditional mean sits
+# far from the unconditional mean (an intercept-only model cannot track it).
+# --------------------------------------------------------------------------------------------
+NFP_A = D("150")
+NFP_B1 = D("0.30")
+NFP_B2 = D("-3")  # per 1k claims change
+NFP_B3 = D("1.5")  # per 1k ADP change
+NFP_B4 = D("0.2")  # per 1k JOLTS openings change
+NFP_NOISE_SD = 15.0
+NFP_REF_DICSA = D("-30")
+NFP_REF_DADP = D("30")
+
+SERIES_PAYEMS = "PAYEMS"
+SERIES_ICSA = "ICSA"
+SERIES_ADP = "ADPWNUSNERSA"
+SERIES_JOLTS = "JTSJOL"
+
+
+@dataclass(frozen=True)
+class SyntheticNfpTruth:
+    ref_month: date
+    asof: datetime  # 1us before ref_month's would-be first vintage
+    ref_first_vintage: datetime
+    noiseless: bool
+    true_change_k: Decimal  # noise-free E[first-print change] for ref_month, thousands
+    unconditional_change_k: Decimal  # mean realized first-print change over the history
+    payems_levels: dict[date, Decimal]  # thousands, first vintages
+    claims_k: dict[date, Decimal]  # monthly-mean ICSA in thousands, ref_month included
+    adp_k: dict[date, Decimal]  # monthly-mean ADP in thousands, ref_month included
+    jolts: dict[date, Decimal]  # thousands (start-3 .. ref_month)
+    first_vintage: dict[date, datetime]  # PAYEMS month -> first vintage_ts
+
+
+def nfp_first_vintage_for(month: date) -> datetime:
+    """Employment Situation: the 7th of the following month."""
+    nxt = add_months(month, 1)
+    return fred_vintage_ts(date(nxt.year, nxt.month, 7))
+
+
+def _jolts_vintage_for(month: date) -> datetime:
+    pub = add_months(month, 2)
+    return fred_vintage_ts(date(pub.year, pub.month, 5))
+
+
+async def seed_synthetic_nfp(
+    session: AsyncSession,
+    *,
+    months: int = 72,
+    start: date = date(2018, 1, 1),
+    noise_seed: int = 11,
+    noiseless: bool = False,
+    noise_sd: float = NFP_NOISE_SD,
+) -> SyntheticNfpTruth:
+    if months < 12:
+        raise ValueError("months must be >= 12")
+    start = date(start.year, start.month, 1)
+    rng = random.Random(noise_seed)
+    noise_sd = 0.0 if noiseless else noise_sd
+    ref_month = add_months(start, months)
+
+    def ar1(mean: float, rho: float, sd: float, n: int) -> list[float]:
+        out = [mean]
+        for _ in range(n - 1):
+            out.append(mean + rho * (out[-1] - mean) + rng.gauss(0.0, sd))
+        return out
+
+    # Exogenous monthly levels over index -3 .. months (list position = index + 3).
+    n_all = months + 4
+    claims_p = [round(v * 1000) for v in ar1(220.0, 0.8, 10.0, n_all)]  # persons
+    adp_p = [round(v * 1000) for v in ar1(20.0, 0.7, 20.0, n_all)]
+    # Force the reference month's ICSA / ADP changes (persons) to the extreme values.
+    claims_p[-1] = claims_p[-2] + int(NFP_REF_DICSA * 1000)
+    adp_p[-1] = adp_p[-2] + int(NFP_REF_DADP * 1000)
+    jolts = [_dec(v).quantize(_Q3) for v in ar1(7000.0, 0.9, 100.0, n_all)]  # thousands
+
+    def at(i: int) -> int:
+        return i + 3
+
+    def thousands(persons: int) -> Decimal:
+        return D(persons) / D(1000)
+
+    def d_claims(i: int) -> Decimal:
+        return thousands(claims_p[at(i)]) - thousands(claims_p[at(i - 1)])
+
+    def d_adp(i: int) -> Decimal:
+        return thousands(adp_p[at(i)]) - thousands(adp_p[at(i - 1)])
+
+    def d_jolts(i: int) -> Decimal:
+        return jolts[at(i - 2)] - jolts[at(i - 3)]
+
+    def mean_change(i: int, prev: Decimal) -> Decimal:
+        return (
+            NFP_A + NFP_B1 * prev + NFP_B2 * d_claims(i) + NFP_B3 * d_adp(i) + NFP_B4 * d_jolts(i)
+        )
+
+    changes: list[Decimal] = [D("200")]  # c_0: only seeds the AR term, never a sample
+    for i in range(1, months):
+        noise = _dec(rng.gauss(0, noise_sd))
+        changes.append((mean_change(i, changes[-1]) + noise).quantize(_Q3))
+    true_change = mean_change(months, changes[-1])
+    uncond = sum(changes[1:], D(0)) / (months - 1)
+
+    levels: list[Decimal] = [D("150000.000")]
+    for i in range(1, months):
+        levels.append(levels[-1] + changes[i])
+
+    month_of = [add_months(start, i) for i in range(months)]
+    rows: list[DataObservation] = []
+    first_vintage: dict[date, datetime] = {}
+    for i, level in enumerate(levels):
+        vts = nfp_first_vintage_for(month_of[i])
+        first_vintage[month_of[i]] = vts
+        rows.append(_obs(SERIES_PAYEMS, month_of[i], vts, level))
+    for i in range(-3, months + 1):
+        month = add_months(start, i)
+        for day in (1, 8, 15, 22):
+            d = date(month.year, month.month, day)
+            known = fred_vintage_ts(d + timedelta(days=5))
+            rows.append(_obs(SERIES_ICSA, d, known, D(claims_p[at(i)])))
+            rows.append(_obs(SERIES_ADP, d, known, D(adp_p[at(i)])))
+        rows.append(_obs(SERIES_JOLTS, month, _jolts_vintage_for(month), jolts[at(i)]))
+
+    session.add_all(rows)
+    await session.commit()
+
+    ref_fv = nfp_first_vintage_for(ref_month)
+    return SyntheticNfpTruth(
+        ref_month=ref_month,
+        asof=ref_fv - timedelta(microseconds=1),
+        ref_first_vintage=ref_fv,
+        noiseless=noiseless,
+        true_change_k=true_change,
+        unconditional_change_k=uncond,
+        payems_levels={month_of[i]: v for i, v in enumerate(levels)},
+        claims_k={add_months(start, i): thousands(claims_p[at(i)]) for i in range(-3, months + 1)},
+        adp_k={add_months(start, i): thousands(adp_p[at(i)]) for i in range(-3, months + 1)},
+        jolts={add_months(start, i): jolts[at(i)] for i in range(-3, months + 1)},
+        first_vintage=first_vintage,
     )
