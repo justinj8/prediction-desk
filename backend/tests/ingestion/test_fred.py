@@ -49,7 +49,10 @@ def test_fred_vintage_ts() -> None:
 
 
 async def test_release_names() -> None:
+    requests: list[httpx.Request] = []
+
     def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
         assert req.url.path == "/fred/release"
         rid = req.url.params["release_id"]
         return httpx.Response(200, content=_fixture(f"fred_release_{rid}.json"))
@@ -57,6 +60,10 @@ async def test_release_names() -> None:
     client = _client(handler)
     assert await client.release_name(10) == "Consumer Price Index"
     assert await client.release_name(50) == "Employment Situation"
+    assert [dict(r.url.params) for r in requests] == [
+        {"release_id": "10", "api_key": KEY, "file_type": "json"},
+        {"release_id": "50", "api_key": KEY, "file_type": "json"},
+    ]
 
 
 async def test_cpi_vintages_include_revisions() -> None:
@@ -177,3 +184,25 @@ async def test_bad_series_http_400_propagates_without_key() -> None:
         await _client(handler).observations_all_vintages("NOPE", date(2024, 1, 1))
     assert exc.value.status == 400
     assert KEY not in str(exc.value)
+
+
+@pytest.mark.parametrize("value", ["NaN", "nan", "Infinity", "-Infinity", "sNaN"])
+async def test_non_finite_value_raises(value: str) -> None:
+    body = {"count": 1, "observations": [_obs("2024-02-13", "2024-01-01", value)]}
+    client = _client(lambda req: httpx.Response(200, content=json.dumps(body)))
+    with pytest.raises(ProviderError, match="malformed observation"):
+        await client.observations_all_vintages("X", date(2024, 1, 1))
+
+
+@pytest.mark.parametrize("count", ["abc", None, [], {}, True, -1, "1.5"])
+async def test_malformed_count_raises(count: object) -> None:
+    body = {"count": count, "observations": [_obs("2024-02-13", "2024-01-01", "1")]}
+    client = _client(lambda req: httpx.Response(200, content=json.dumps(body)))
+    with pytest.raises(ProviderError, match="malformed observations response"):
+        await client.observations_all_vintages("X", date(2024, 1, 1))
+
+
+async def test_numeric_string_count_accepted() -> None:
+    body = {"count": "1", "observations": [_obs("2024-02-13", "2024-01-01", "1")]}
+    client = _client(lambda req: httpx.Response(200, content=json.dumps(body)))
+    assert len(await client.observations_all_vintages("X", date(2024, 1, 1))) == 1

@@ -7,6 +7,7 @@ transaction, and the audit appends come last, right before commit. A ProviderErr
 series is collected and never stops the others.
 """
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -28,6 +29,8 @@ from prediction_desk.markets.mapping import (
 )
 from prediction_desk.markets.types import VenueAdapter, VenueMarket
 from prediction_desk.net.http import ProviderError
+
+logger = logging.getLogger(__name__)
 
 AUDIT_ACTOR: Final = "system:discovery"
 AUDIT_ENTITY: Final = "event_contract"
@@ -56,11 +59,27 @@ def _quantize(value: Decimal | None) -> Decimal | None:
     return None if value is None else value.quantize(STRIKE_QUANTUM)
 
 
-def _identity(row: EventContract) -> tuple[object, ...]:
-    """What counts as a mapping change; Decimals compare by value, so DB round-trips are equal."""
+def _release_fields(
+    row: EventContract, releases: Mapping[int, Release]
+) -> tuple[str | None, str | None]:
+    """(period, ISO scheduled_at) of the linked release, as of this run's release read."""
+    release = None if row.release_id is None else releases.get(row.release_id)
+    if release is None:
+        return None, None
+    return release.period, release.scheduled_at.isoformat()
+
+
+def _identity(row: EventContract, releases: Mapping[int, Release]) -> tuple[object, ...]:
+    """What counts as a mapping change; Decimals compare by value, so DB round-trips are equal.
+
+    It mirrors the audit payload, including the linked release's period and scheduled_at.
+    Those come from this run's release read for both the old and the new state, so a release
+    edited in place (sync_releases moving it) does not by itself re-audit linked contracts.
+    """
     return (
         row.mapping_status,
         row.release_id,
+        *_release_fields(row, releases),
         row.measure,
         row.comparator,
         row.strike_lo,
@@ -71,13 +90,18 @@ def _identity(row: EventContract) -> tuple[object, ...]:
     )
 
 
-def _payload(venue: Venue, market_id: str, row: EventContract) -> dict[str, Any]:
+def _payload(
+    venue: Venue, market_id: str, row: EventContract, releases: Mapping[int, Release]
+) -> dict[str, Any]:
     strike_lo = _quantize(row.strike_lo)
     strike_hi = _quantize(row.strike_hi)
+    release_period, release_scheduled_at = _release_fields(row, releases)
     return {
         "venue": venue.value,
         "market_id": market_id,
         "release_id": row.release_id,
+        "release_period": release_period,
+        "release_scheduled_at": release_scheduled_at,
         "measure": None if row.measure is None else row.measure.value,
         "comparator": None if row.comparator is None else row.comparator.value,
         "strike_lo": None if strike_lo is None else str(strike_lo),
@@ -129,9 +153,9 @@ def _set_mapping(row: EventContract, outcome: tuple[ContractTerms, Release] | Un
     row.mapped_by = MAPPER_VERSION
 
 
-def _snapshot(row: EventContract) -> tuple[object, ...]:
+def _snapshot(row: EventContract, releases: Mapping[int, Release]) -> tuple[object, ...]:
     return (
-        *_identity(row),
+        *_identity(row, releases),
         row.resolution_source,
         row.title,
         row.rules_text,
@@ -143,6 +167,21 @@ def _snapshot(row: EventContract) -> tuple[object, ...]:
     )
 
 
+def _dedupe(markets: Sequence[VenueMarket]) -> list[VenueMarket]:
+    """First occurrence of each market id; a conflicting later duplicate is logged and dropped."""
+    first: dict[str, VenueMarket] = {}
+    for m in markets:
+        kept = first.setdefault(m.market_id, m)
+        if kept is not m and kept != m:
+            logger.warning(
+                "discovery: conflicting duplicate market %s %s in %s; keeping the first",
+                m.venue.value,
+                m.market_id,
+                m.series_code,
+            )
+    return list(first.values())
+
+
 async def _upsert_series(
     session: AsyncSession,
     venue: Venue,
@@ -151,6 +190,7 @@ async def _upsert_series(
     clock: Clock,
     result: DiscoveryResult,
 ) -> list[_AuditEntry]:
+    by_id = {r.id: r for r in releases}
     ids = [m.market_id for m in markets]
     existing = {
         r.venue_market_id: r
@@ -176,8 +216,8 @@ async def _upsert_series(
             existing[m.market_id] = row
             before: tuple[object, ...] | None = None
         else:
-            before = _snapshot(row)
-        old_identity = None if is_new else _identity(row)
+            before = _snapshot(row, by_id)
+        old_identity = None if is_new else _identity(row, by_id)
         row.venue_event_id = m.event_id
         row.yes_token_id = m.yes_token_id
         row.title = m.title
@@ -196,17 +236,19 @@ async def _upsert_series(
             )
             entries.append((row, action))
             result.changed += 1
-        elif _identity(row) != old_identity:
+        elif _identity(row, by_id) != old_identity:
             entries.append((row, "contract_remapped"))
             result.changed += 1
         else:
             result.unchanged += 1
-        if before is not None and _snapshot(row) != before:
+        if before is not None and _snapshot(row, by_id) != before:
             row.updated_at = now
     await session.flush()
     return [
         _AuditEntry(
-            f"{venue.value}:{r.venue_market_id}", action, _payload(venue, r.venue_market_id, r)
+            f"{venue.value}:{r.venue_market_id}",
+            action,
+            _payload(venue, r.venue_market_id, r, by_id),
         )
         for r, action in entries
     ]
@@ -236,8 +278,9 @@ async def discover_contracts(
             except ProviderError as e:
                 result.failures.append((code, f"{type(e).__name__}: {e}"))
                 continue
+            unique = _dedupe(markets)
             async with sessions() as session, session.begin():
-                entries = await _upsert_series(session, venue, markets, releases, clock, result)
+                entries = await _upsert_series(session, venue, unique, releases, clock, result)
                 for entry in entries:  # audit last, right before commit
                     await audit.append(
                         session,

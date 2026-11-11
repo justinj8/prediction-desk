@@ -1,5 +1,6 @@
+import logging
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -259,3 +260,59 @@ async def test_discovery_unexpected_error_keeps_committed_series(
         await session.execute(select(func.count()).select_from(EventContract))
     ).scalar_one() == 1
     assert await _audit_count(session) == 1
+
+
+async def test_updated_at_bumps_only_on_descriptive_change(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    await _seed_release(session)
+    clock = SimClock(NOW)
+    await _run(sessions, FakeAdapter({"KXCPI": [_market()]}), clock=clock)
+    clock.advance(timedelta(hours=1))
+    unchanged = await _run(sessions, FakeAdapter({"KXCPI": [_market()]}), clock=clock)
+    assert unchanged.unchanged == 1
+    row = (
+        await session.execute(select(EventContract).execution_options(populate_existing=True))
+    ).scalar_one()
+    assert (row.created_at, row.updated_at) == (NOW, NOW)
+    clock.advance(timedelta(hours=1))
+    await _run(sessions, FakeAdapter({"KXCPI": [_market(title="renamed")]}), clock=clock)
+    row = (
+        await session.execute(select(EventContract).execution_options(populate_existing=True))
+    ).scalar_one()
+    assert (row.created_at, row.updated_at) == (NOW, NOW + timedelta(hours=2))
+    assert await _audit_count(session) == 1
+
+
+async def test_duplicate_market_ids_keep_first_and_warn(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await _seed_release(session)
+    markets = [_market(floor=0.3), _market(floor=0.3), _market(floor=0.4)]
+    with caplog.at_level(logging.WARNING, logger="prediction_desk.markets.discovery"):
+        result = await _run(sessions, FakeAdapter({"KXCPI": markets}))
+    assert (result.mapped, result.changed, result.unchanged) == (1, 1, 0)
+    row = (await session.execute(select(EventContract))).scalar_one()
+    assert row.strike_lo == Decimal("0.3")
+    ev = (await session.execute(select(AuditEvent))).scalar_one()
+    assert ev.payload["strike_lo"] == "0.3000"
+    assert caplog.text.count("duplicate market") == 1
+    assert "KXCPI-26NOV-T0.3" in caplog.text
+
+
+async def test_audit_payload_names_linked_release(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    await _seed_release(session)
+    await _run(sessions, FakeAdapter({"KXCPI": [_market(), _market(mid="BAD", floor=None)]}))
+    events = {
+        ev.entity_id: ev.payload for ev in (await session.execute(select(AuditEvent))).scalars()
+    }
+    mapped = events["kalshi:KXCPI-26NOV-T0.3"]
+    assert mapped["release_period"] == "2026-11"
+    assert mapped["release_scheduled_at"] == "2026-12-10T13:30:00+00:00"
+    unmapped = events["kalshi:BAD"]
+    assert unmapped["release_period"] is None
+    assert unmapped["release_scheduled_at"] is None

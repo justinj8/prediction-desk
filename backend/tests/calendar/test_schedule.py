@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -238,3 +239,93 @@ async def test_sync_updates_scheduled_at_when_it_differs(
     assert result == SyncResult(inserted=32, updated=1)
     (row,) = await _releases(session, Series.CPI)
     assert row.scheduled_at == datetime(2025, 11, 20, 13, 30, tzinfo=UTC)
+
+
+# ---- _upsert hardening -----------------------------------------------------------------------
+
+NOV_20_CPI_AT = datetime(2025, 11, 20, 13, 30, tzinfo=UTC)
+SCHEDULE_LOGGER = "prediction_desk.calendar.schedule"
+
+
+async def test_sync_scheduled_at_change_logs_warning(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session.add(
+        Release(
+            series=Series.CPI, period="2025-10", scheduled_at=datetime(2025, 11, 20, tzinfo=UTC)
+        )
+    )
+    await session.commit()
+    with caplog.at_level(logging.WARNING, logger=SCHEDULE_LOGGER):
+        await sync_releases(sessions, _fred(NOV_20), since=SINCE)
+    assert "CPI 2025-10" in caplog.text and "scheduled_at" in caplog.text
+
+
+async def test_sync_never_moves_scheduled_at_once_actual_value_recorded(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    old_at = datetime(2025, 11, 20, tzinfo=UTC)
+    fomc_old_at = datetime(2024, 1, 31, 20, 0, tzinfo=UTC)
+    session.add_all(
+        [
+            Release(series=Series.CPI, period="2025-10", scheduled_at=old_at, actual_value=3),
+            Release(
+                series=Series.FOMC, period="2024-01-31", scheduled_at=fomc_old_at, actual_value=0
+            ),
+        ]
+    )
+    await session.commit()
+    with caplog.at_level(logging.WARNING, logger=SCHEDULE_LOGGER):
+        result = await sync_releases(sessions, _fred(NOV_20), since=SINCE)
+    assert result == SyncResult(inserted=31, updated=0)
+    (cpi,) = await _releases(session, Series.CPI)
+    assert cpi.scheduled_at == old_at
+    fomc = await _releases(session, Series.FOMC)
+    assert fomc[0].scheduled_at == fomc_old_at
+    assert caplog.text.count("has actual_value") == 2
+
+
+async def test_sync_period_rewrite_picks_lowest_id_and_warns(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Two rows on the release day with periods no anchor data supports: rewrite only the first.
+    first = Release(series=Series.CPI, period="2025-10", scheduled_at=NOV_20_CPI_AT)
+    session.add(first)
+    await session.flush()
+    second = Release(series=Series.CPI, period="2025-07", scheduled_at=NOV_20_CPI_AT)
+    session.add(second)
+    session.add(_obs("CPIAUCSL", date(2025, 9, 1), date(2025, 11, 20)))
+    await session.commit()
+    with caplog.at_level(logging.WARNING, logger=SCHEDULE_LOGGER):
+        result = await sync_releases(sessions, _fred(NOV_20), since=SINCE)
+    assert result.updated == 1
+    rows = {r.id: r.period for r in await _releases(session, Series.CPI)}
+    assert rows == {first.id: "2025-09", second.id: "2025-07"}
+    assert "2025-10" in caplog.text and "2025-09" in caplog.text
+
+
+async def test_sync_does_not_rewrite_period_supported_by_anchor_data(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    # Anchor data published that day covers 2025-08 and 2025-09: a 2025-08 row is legitimate
+    # and must survive; the 2025-09 release is inserted beside it.
+    kept = Release(series=Series.CPI, period="2025-08", scheduled_at=NOV_20_CPI_AT)
+    session.add_all(
+        [
+            kept,
+            _obs("CPIAUCSL", date(2025, 8, 1), date(2025, 11, 20)),
+            _obs("CPIAUCSL", date(2025, 9, 1), date(2025, 11, 20)),
+        ]
+    )
+    await session.commit()
+    result = await sync_releases(sessions, _fred(NOV_20), since=SINCE)
+    assert result.updated == 0
+    rows = {r.period: r.id for r in await _releases(session, Series.CPI)}
+    assert set(rows) == {"2025-08", "2025-09"}
+    assert rows["2025-08"] == kept.id

@@ -154,17 +154,37 @@ MONTH_ABBREVIATIONS: Final[dict[str, str]] = {
 KALSHI_EVENT_PERIOD: Final = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})?$")
 
 
+# Numeric strike strings: optional minus, bounded digit runs (so Decimal never sees a huge
+# literal), no exponent, sign or padding. STRIKE_MAX_EXPONENT keeps |strike| < 1e10, the
+# Numeric(14, 4) column limit.
+NUMERIC_STRIKE: Final = re.compile(r"-?[0-9]{1,9}(?:\.[0-9]{1,6})?")
+STRIKE_MAX_EXPONENT: Final = 10
+
+
 def _terms(measure: Measure, comparator: Comparator, strike_lo: Decimal) -> ContractTerms:
     unit, precision, source = MEASURE_SPECS[measure]
     return ContractTerms(measure, comparator, strike_lo, None, unit, precision, source)
 
 
 def _numeric(value: object) -> Decimal | None:
-    """Decimal of an int/float/Decimal; None for anything else (including bool and NaN)."""
-    if isinstance(value, bool) or not isinstance(value, int | float | Decimal):
+    """Decimal of an int/float/Decimal or a plain decimal string ("0.3", "-0.3", "90000").
+
+    None for anything else: bool, non-finite values, exponents, padding, unbounded digit runs,
+    and magnitudes that do not fit the Numeric(14, 4) strike columns.
+    """
+    if isinstance(value, bool):
         return None
-    number = Decimal(str(value))
-    return number if number.is_finite() else None
+    if isinstance(value, str):
+        if NUMERIC_STRIKE.fullmatch(value) is None:
+            return None
+        number = Decimal(value)
+    elif isinstance(value, int | float | Decimal):
+        number = Decimal(str(value))
+    else:
+        return None
+    if not number.is_finite() or number.adjusted() >= STRIKE_MAX_EXPONENT:
+        return None
+    return number
 
 
 def _kalshi_greater(m: VenueMarket, measure: Measure) -> ContractTerms | Unmapped:
