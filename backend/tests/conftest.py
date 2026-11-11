@@ -1,6 +1,6 @@
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from prediction_desk.config import DEFAULT_TEST_ADMIN_URL, normalize_db_url
 from prediction_desk.db.engine import make_engine, make_sessionmaker
+from synthetic_macro import SyntheticCpiTruth
+from synthetic_macro import seed_synthetic_cpi as _seed_synthetic_cpi
 
 _ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
@@ -109,3 +111,9 @@ def vcr_config() -> dict[str, Any]:
         "decode_compressed_response": True,
         "before_record_response": _drop_response_cookies,
     }
+
+
+@pytest.fixture
+def seed_synthetic_cpi() -> Callable[..., Awaitable[SyntheticCpiTruth]]:
+    """Seeder for synthetic CPI point-in-time data (see tests/synthetic_macro.py)."""
+    return _seed_synthetic_cpi
