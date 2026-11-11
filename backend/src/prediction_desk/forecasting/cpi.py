@@ -1,12 +1,13 @@
 """CPI base model `cpi-ridge-v1`.
 
 MoM measures are ridge regressions on point-in-time features with a Student-t whose scale is
-the out-of-sample RMS (floored). YoY measures are an exact affine transform of the NSA MoM:
+the out-of-sample RMS (floored). YoY measures transform the NSA MoM (the mean exactly):
 
     YoY = 100 (r - 1) + r * X_nsa,   r = L_nsa[m-1] / L_nsa[m-12],   X_nsa = X_sa + s_m
 
-so YoY = affine(MoM, a = 100 (r - 1) + r * s_m, b = r), with s_m the recent-year mean of
-(NSA MoM - SA MoM) for m's calendar month.
+so the YoY mean is 100 (r - 1) + r * (mu_mom + s_m), with s_m the recent-year mean of
+(NSA MoM - SA MoM) for m's calendar month. Ruling R6: sigma_yoy = r * sqrt(sigma_mom^2 + var_s),
+var_s being the sample variance of those per-year offsets.
 """
 
 from datetime import date, datetime
@@ -18,7 +19,7 @@ from prediction_desk.db.models import Release
 from prediction_desk.domain.enums import DataSource, Measure, Series
 from prediction_desk.domain.types import require_utc
 from prediction_desk.forecasting.base import ModelOutput
-from prediction_desk.forecasting.distributions import StudentT, affine
+from prediction_desk.forecasting.distributions import StudentT
 from prediction_desk.forecasting.realtime import (
     FeatureFn,
     InsufficientData,
@@ -144,6 +145,9 @@ class CpiModelV1:
     ) -> ModelOutput:
         asof = require_utc(asof)
         month = _parse_period(release.period)
+        published = await first_vintage_ts(session, _FRED, "CPIAUCSL", month)
+        if published is not None and published <= asof:
+            raise ValueError("release already published as of asof")
         dists: dict[Measure, StudentT] = {}
         diagnostics: dict[str, str] = {}
         n_trains: list[int] = []
@@ -161,10 +165,13 @@ class CpiModelV1:
             (Measure.CPI_YOY, Measure.CPI_MOM),
             (Measure.CORE_CPI_YOY, Measure.CORE_CPI_MOM),
         ):
-            dist_yoy, r, s_m = await self._yoy(session, provider, yoy, dists[mom], month, asof)
+            dist_yoy, r, s_m, var_s = await self._yoy(
+                session, provider, yoy, dists[mom], month, asof
+            )
             dists[yoy] = dist_yoy
             diagnostics[f"{yoy.value}.r"] = str(r)
             diagnostics[f"{yoy.value}.s_m"] = str(s_m)
+            diagnostics[f"{yoy.value}.var_s"] = str(var_s)
 
         return ModelOutput(
             model_version=self.model_version,
@@ -206,7 +213,7 @@ class CpiModelV1:
         mom: StudentT,
         month: date,
         asof: datetime,
-    ) -> tuple[StudentT, Decimal, Decimal]:
+    ) -> tuple[StudentT, Decimal, Decimal, Decimal]:
         sa_id, nsa_id = _YOY_SERIES[measure]
         start = date(month.year - SEASONAL_SEARCH_YEARS - 1, 1, 1)
         nsa = await levels_asof(provider, session, nsa_id, asof, start)
@@ -232,5 +239,11 @@ class CpiModelV1:
             raise InsufficientData(f"{measure.value}_levels", have, 2)
         r = (last / base).quantize(_Q_RATIO, rounding=ROUND_HALF_EVEN)
 
-        a = _HUNDRED * (r - 1) + r * s_m
-        return affine(mom, a, r), r, s_m
+        # Ruling R6: the seasonal offset is itself uncertain, so it widens sigma.
+        mean_exact = sum(offsets, Decimal(0)) / len(offsets)
+        var_s = (
+            sum(((o - mean_exact) ** 2 for o in offsets), Decimal(0)) / (len(offsets) - 1)
+        ).quantize(_Q, rounding=ROUND_HALF_EVEN)
+        sigma = r * (mom.sigma**2 + var_s).quantize(_Q, rounding=ROUND_HALF_EVEN).sqrt()
+        mu = _HUNDRED * (r - 1) + r * (mom.mu + s_m)
+        return StudentT(mu, sigma, mom.nu), r, s_m, var_s
