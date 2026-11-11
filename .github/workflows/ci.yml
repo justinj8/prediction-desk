@@ -44,6 +44,8 @@ jobs:
         run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=85
       - name: Audit coverage gate (100%)
         run: uv run coverage report --include='*/prediction_desk/audit/*' --fail-under=100
+      - name: Pricing coverage gate (100%)
+        run: uv run coverage report --include='*/prediction_desk/pricing/*' --fail-under=100
 
   secrets:
     # Scans the ENTIRE git history on every run with the pinned gitleaks CLI.
