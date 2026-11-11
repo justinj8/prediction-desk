@@ -7,11 +7,14 @@ from decimal import Decimal
 
 from prediction_desk.domain.enums import Comparator, Measure
 from prediction_desk.domain.types import Prob
-from prediction_desk.forecasting.distributions import Categorical, Distribution
+from prediction_desk.forecasting.distributions import (
+    Categorical,
+    Distribution,
+    Normal,
+    StudentT,
+)
 from prediction_desk.markets.mapping import ContractTerms
 from prediction_desk.pricing.regions import reported_interval
-
-_CONTINUOUS = {"normal", "student_t"}
 
 
 def _categorical_pred(terms: ContractTerms) -> Callable[[int], bool]:
@@ -41,7 +44,7 @@ def fair_prob(terms: ContractTerms, dist: Distribution) -> Prob:
         if not isinstance(dist, Categorical):
             raise ValueError(f"unit 'bp' requires a categorical distribution, got {dist.family}")
         return dist.prob_where(_categorical_pred(terms))
-    if dist.family not in _CONTINUOUS:
+    if not isinstance(dist, Normal | StudentT):
         raise ValueError(
             f"unit {terms.unit!r} requires a continuous distribution, got {dist.family}"
         )

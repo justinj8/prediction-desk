@@ -90,7 +90,7 @@ def test_polymarket_bracket_sums_to_one() -> None:
     terms = [cpi(C.LTE, "3.2")]
     terms += [cpi(C.EQ, str(D(k) / 10)) for k in range(33, 43)]
     terms.append(cpi(C.GTE, "4.3"))
-    assert bracket_sum_violation([fair_prob(t, dist) for t in terms]) is None
+    assert bracket_sum_violation([fair_prob(t, dist) for t in terms], D("0.0001")) is None
 
 
 def test_bracket_violation_message() -> None:
@@ -126,3 +126,9 @@ def test_equal_strikes_must_match_and_eq_between_ignored() -> None:
     ]
     out = monotonic_violations(items)
     assert len(out) == 1 and "equal strikes" in out[0]
+
+
+def test_categorical_with_spoofed_family_cannot_use_continuous_path() -> None:
+    spoof = Categorical(((0, D("1")),), family="normal")
+    with pytest.raises(ValueError, match="continuous"):
+        fair_prob(cpi(C.GT, "0.3"), spoof)
