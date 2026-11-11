@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 from hypothesis import given
@@ -34,7 +34,17 @@ C = Comparator
         (C.LTE, "3.25", None, 1, None, "3.25"),
         (C.GT, "0.35", None, 1, "0.35", None),
         (C.GTE, "0.35", None, 1, "0.35", None),
-        (C.GT, "0.3", D("9"), 1, "0.35", None),
+        (C.GT, "0.3", "9", 1, "0.35", None),
+        (C.GT, "-0.25", None, 1, "-0.25", None),
+        (C.LT, "-0.25", None, 1, None, "-0.25"),
+        (C.GTE, "-0.25", None, 1, "-0.25", None),
+        (C.LTE, "-0.25", None, 1, None, "-0.25"),
+        (C.GT, "0", None, 1, "0.05", None),
+        (C.LT, "0", None, 1, None, "-0.05"),
+        (C.LTE, "0", None, 1, None, "0.05"),
+        (C.EQ, "-0.3", None, 1, "-0.35", "-0.25"),
+        (C.GT, "-90500", None, -3, "-90500", None),
+        (C.LTE, "-90500", None, -3, None, "-90500"),
     ],
 )
 def test_reported_interval(
@@ -83,3 +93,33 @@ def test_gte_and_lt_partition_line(k: int, precision: int) -> None:
     gte = reported_interval(C.GTE, s, None, precision)
     lt = reported_interval(C.LT, s, None, precision)
     assert gte.lower == lt.upper
+
+
+_ORACLE = {
+    C.GT: lambda r, s: r > s,
+    C.GTE: lambda r, s: r >= s,
+    C.LT: lambda r, s: r < s,
+    C.LTE: lambda r, s: r <= s,
+    C.EQ: lambda r, s: r == s,
+}
+
+
+@given(
+    precision=st.sampled_from([1, 0, -3]),
+    comparator=st.sampled_from(list(_ORACLE)),
+    n=st.integers(-40, 40),
+    m=st.integers(-320, 320),
+)
+def test_interval_matches_rounding_oracle(
+    precision: int, comparator: Comparator, n: int, m: int
+) -> None:
+    g = D(1).scaleb(-precision)
+    s = D(n) * g / 4  # on or off grid, negatives and zero included
+    x = D(m) * g / 8  # includes grid midpoints and quarter points
+    q = x / g
+    if q - q.to_integral_value(rounding="ROUND_FLOOR") == D("0.5"):
+        return  # exact rounding tie: measure zero for continuous values
+    r = q.to_integral_value(rounding=ROUND_HALF_UP) * g
+    iv = reported_interval(comparator, s, None, precision)
+    inside = (iv.lower is None or iv.lower <= x) and (iv.upper is None or x < iv.upper)
+    assert inside == _ORACLE[comparator](r, s)
