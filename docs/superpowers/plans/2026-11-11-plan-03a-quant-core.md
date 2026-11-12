@@ -566,3 +566,55 @@ schedules:
 - For a release with enough point-in-time history, `price_release` returns a fair probability and a per-side edge for every mapped contract. Every missing input is reported with a reason; none is silently skipped.
 - Every public output is Decimal, Prob or int, and `inputs_hash` lets Plan 5 prove two runs saw identical inputs.
 - No model can see a vintage published after its prediction `asof`, and the Task 5 and 6 leakage tests prove this.
+
+---
+
+## Execution Outcome and Carry-Forward (added after execution)
+
+Plan 3a was executed with subagent-driven development on branch `plan-03a-quant-core`, stacked on `plan-02-data-and-markets` (R1). Each of the 9 tasks got its own task review with reviewer-run mutation testing. Tasks 5, 6, 8 and 9 needed one fix round each. Then came a whole-branch Opus review, which ran an end-to-end scenario through the real model registry; one fix wave; and a scoped re-review, which returned "Ready". The suite ends at **844 tests** (`--record-mode=none --block-network`), with 98.8% total coverage and 100% on both `pricing/` and `audit/`. All three series (CPI, NFP, FOMC) price cleanly end to end on both venues through `MODELS`, and `inputs_hash` is identical across sessions (`tests/pricing/test_price_release_e2e.py`).
+
+**Rulings that amended this plan.** R1–R7 are controller rulings; R8 and R10–R14 are user decisions. R9 is Plan 2's reader/session rule.
+- **R2.** Synthetic seeders live in `backend/tests/synthetic_macro.py` and are exposed via conftest fixtures.
+- **R3.** The `pricing/` 100% CI gate was added in Task 3.
+- **R4.** The Kalshi edge fee is max(order-level ceil fee, sum of per-fill ceil fees). It is never understated.
+- **R5.** `oos_sigma` raises on empty residuals instead of returning the floor.
+- **R6.** CPI YoY σ = r·sqrt(σ_mom² + var_s), where var_s is the year-to-year variance of the seasonal offset. YoY is StudentT and is no longer a pure affine of MoM.
+- **R7.** Every model's `predict` raises when its reference data is already published at `asof`.
+- **R8.** FOMC fails closed when the latest DFF or DTB4WK observation is more than 7 calendar days older than the asof ET date: `InsufficientData("fomc_rates_stale", …)`.
+- **R10.** A Polymarket bracket's sum is checked only for a structurally complete partition. Otherwise the result is an "incomplete bracket (k of n mapped)" coherence violation, which carries the same blocking force.
+- **R11.** A malformed mapped contract skips only itself and goes into `ReleasePricing.rejected`.
+  - `terms_from_row` validates the MEASURE_SPECS triple, finite strikes, and that BETWEEN has `strike_hi` with lo ≤ hi.
+  - Migration `0004` extends `mapped_complete` to require unit, precision and source.
+- **R12.** `price_release` raises when `release.scheduled_at <= asof`, for every series, before any model runs. This closes the 08:30→midnight window that the D+1 vintage stamp leaves open for CPI and NFP.
+- **R13.** The CPI MoM σ floor is 0.10pp (was 0.05).
+- **R14.** Models stay honest: exact 0/1 fair probabilities are allowed. Plan 3b clamps them (see below).
+
+**What 3a built that later plans consume**
+- **Pricing output.** `price_release(session, provider, release, asof, *, probe_qty, max_quote_age, fee_schedules, models) -> ReleasePricing` is read-only.
+  - It runs under `no_autoflush` and a pinned Decimal context.
+  - It never commits or rolls back; the caller owns the session (Plan 2 R9).
+- **Reproducibility.** `inputs_hash` covers `PRICING_VERSION`, every MAPPED row's full terms, `rules_hash`, the snapshot id, the unpriceable/rejected maps, `max_quote_age` (µs), the fee schedules used, and the Polymarket event sizes. Bump `PRICING_VERSION` whenever pricing/edge/fee logic changes.
+- **Unpriceable reasons:**
+  - `insufficient_data:<measure>`, `no_model`, `no_distribution`.
+  - Quotes can be `Unavailable`: `no_snapshot`, `stale_snapshot`, `bad_snapshot`, `empty_side`, `insufficient_depth`.
+
+**Carry-forward: Plan 3b (risk and execution)**
+- **R14 clamp.** Clamp every fair probability to [0.02, 0.98] before edge-for-sizing and Kelly. The FOMC model puts exactly 0 on three of its five outcomes by construction, and far CPI tails price at 0.00000 or 1.00000. Unclamped Kelly sizes these at the cap.
+- **Coherence blocking.** Treat any coherence violation on an event, whether a sum violation or an incomplete bracket, as no-trade for that event (R10).
+  - `coherence` is currently a tuple of strings. Make it structured `(event_id, kind, msg)` before the risk layer consumes it, rather than parsing strings.
+  - Optional hardening: check grid contiguity of EQ strikes in a bracket, since a missing middle bracket is caught only if its mass exceeds 0.02.
+
+**Carry-forward: Plan 5 (pipeline and replay)**
+- **Quote freshness.** `max_quote_age` defaults to 60 s, so the pipeline must snapshot books immediately before pricing. Decide the snapshot cadence and this default together.
+- **Contract rows are current, not as-of.** Snapshots are point-in-time, but rules, mappings and contracts discovered after `asof` are not. Replay needs bitemporal `event_contracts`.
+- **Release timing.** Never call `price_release` at or after `scheduled_at` (R12 raises).
+- **Performance.** One CPI pricing issues about 1.5k queries and refits OOS each call. Cache per (release, asof).
+- **Partial model output.** One measure's `InsufficientData` currently blanks every measure of the release. This fails closed, so it is acceptable for now.
+- **Live features.** At a live asof inside month m, live and training features can diverge (partial gasoline month). This is harmless at the T−24h schedule.
+- Consolidate the duplicated month helpers in cpi/nfp/realtime; the final review verified they behave identically.
+- Plan 2's carry-forward still applies: bitemporal replay mode, and `ProviderRateLimited` means stop for the day.
+
+**Before any live use**
+- Verify the Polymarket fee schedule. It is `zero` from 2024-01-01 in `fee_schedules.yaml`; a change only needs a new effective-dated row.
+- Run contract discovery once after deploy so every row reflects `rules:v2`. Any stale v1 NFP row is now rejected as `bad_terms` rather than mispriced.
+- Re-record the hand-built FRED and Alpha Vantage fixtures once API keys exist (Plan 2 R8).
