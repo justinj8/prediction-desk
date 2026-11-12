@@ -1,5 +1,6 @@
 """Per-side edge: fair probability minus average fill price minus fee per contract."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
@@ -9,7 +10,7 @@ from prediction_desk.domain.enums import Venue
 from prediction_desk.domain.types import Prob, to_prob
 from prediction_desk.markets.types import OrderBook
 from prediction_desk.pricing.book import buy_fill, side_levels
-from prediction_desk.pricing.fees import fill_fee_cents, schedule_for
+from prediction_desk.pricing.fees import FeeSchedule, fill_fee_cents, schedule_for
 
 Side = Literal["yes", "no"]
 _EDGE_QUANTUM = Decimal("0.0001")
@@ -35,7 +36,13 @@ class Unavailable:
 
 
 def _side_edge(
-    side: Side, fair: Prob, book: OrderBook, venue: Venue, qty: int, asof: datetime
+    side: Side,
+    fair: Prob,
+    book: OrderBook,
+    venue: Venue,
+    qty: int,
+    asof: datetime,
+    schedules: Sequence[FeeSchedule] | None,
 ) -> EdgeQuote | Unavailable:
     levels = side_levels(book, side)
     if not levels:
@@ -44,7 +51,7 @@ def _side_edge(
     if fill is None:
         return Unavailable("insufficient_depth")
     best = levels[0].price
-    fee = fill_fee_cents(schedule_for(venue, asof), fill.avg_price, qty, fill.levels)
+    fee = fill_fee_cents(schedule_for(venue, asof, schedules), fill.avg_price, qty, fill.levels)
     slippage = int(((fill.avg_price - best) * qty * 100).to_integral_value(ROUND_HALF_UP))
     edge = (fair - fill.avg_price - Decimal(fee) / (100 * qty)).quantize(
         _EDGE_QUANTUM, rounding=ROUND_FLOOR
@@ -53,13 +60,18 @@ def _side_edge(
 
 
 def evaluate_edge(
-    fair_yes: Prob, book: OrderBook, venue: Venue, qty: int, asof: datetime
+    fair_yes: Prob,
+    book: OrderBook,
+    venue: Venue,
+    qty: int,
+    asof: datetime,
+    schedules: Sequence[FeeSchedule] | None = None,
 ) -> tuple[EdgeQuote | Unavailable, EdgeQuote | Unavailable]:
     """``(yes, no)`` quotes; the NO side uses ``fair = 1 - fair_yes``."""
     fair_no = to_prob(Decimal(1) - fair_yes)
     return (
-        _side_edge("yes", fair_yes, book, venue, qty, asof),
-        _side_edge("no", fair_no, book, venue, qty, asof),
+        _side_edge("yes", fair_yes, book, venue, qty, asof, schedules),
+        _side_edge("no", fair_no, book, venue, qty, asof, schedules),
     )
 
 
