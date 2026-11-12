@@ -1,7 +1,7 @@
 import hashlib
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal, DivisionByZero, InvalidOperation, Overflow, getcontext
 from types import MappingProxyType
 from typing import Any
 
@@ -13,8 +13,9 @@ from prediction_desk.audit.hashing import canonical_json
 from prediction_desk.db.base import Base
 from prediction_desk.db.models import EventContract, MarketSnapshot, Release
 from prediction_desk.domain.enums import Comparator, MappingStatus, Measure, Series, Venue
+from prediction_desk.domain.types import to_prob
 from prediction_desk.forecasting.base import ModelOutput
-from prediction_desk.forecasting.distributions import StudentT
+from prediction_desk.forecasting.distributions import Categorical, StudentT
 from prediction_desk.forecasting.realtime import InsufficientData
 from prediction_desk.forecasting.registry import MODELS
 from prediction_desk.ingestion.provider import MacroDataProvider
@@ -212,6 +213,46 @@ async def test_prices_every_mapped_contract(
     assert isinstance(result.distributions[Measure.CPI_MOM], MappingProxyType)
 
 
+async def test_result_independent_of_ambient_decimal_context(
+    session: AsyncSession, seed_synthetic_cpi: Seeder
+) -> None:
+    """I2: the whole body, model.predict included, runs under a pinned Decimal context."""
+    truth = await seed_synthetic_cpi(session)
+    release = Release(
+        series=Series.CPI, period=f"{truth.ref_month:%Y-%m}", scheduled_at=truth.ref_first_vintage
+    )
+    session.add(release)
+    await session.commit()
+    rows = [
+        await add_contract(session, release, "A", strike="0.2"),
+        await add_contract(
+            session, release, "C", venue=Venue.POLYMARKET, event="P",
+            measure=Measure.CPI_YOY, strike="3.0",
+        ),
+        await add_contract(
+            session, release, "D", measure=Measure.CORE_CPI_YOY, comparator=Comparator.GT,
+            strike="3.1",
+        ),
+    ]  # fmt: skip
+    for row in rows:
+        await add_snapshot(session, row, at=truth.asof)
+    baseline = await price_release(session, PROVIDER, release, truth.asof)
+    assert len(baseline.contracts) == 3
+
+    ctx = getcontext()
+    saved = (ctx.prec, ctx.rounding)
+    try:
+        ctx.prec = 6
+        ctx.rounding = ROUND_DOWN
+        skewed = await price_release(session, PROVIDER, release, truth.asof)
+        assert (getcontext().prec, getcontext().rounding) == (6, ROUND_DOWN)  # caller's untouched
+    finally:
+        ctx.prec, ctx.rounding = saved
+    assert skewed.inputs_hash == baseline.inputs_hash
+    assert [p.fair_yes for p in skewed.contracts] == [p.fair_yes for p in baseline.contracts]
+    assert skewed == baseline
+
+
 async def test_unmapped_and_other_release_contracts_excluded(session: AsyncSession) -> None:
     r1 = await make_release(session, "2026-10")
     r2 = await make_release(session, "2026-11")
@@ -329,8 +370,8 @@ async def test_insufficient_data_marks_unpriceable_not_raise(
     result = await price_release(session, PROVIDER, release, truth.asof)
 
     assert result.unpriceable == {
-        Measure.CPI_MOM: "insufficient_data",
-        Measure.CPI_YOY: "insufficient_data",
+        Measure.CPI_MOM: "insufficient_data:cpi_mom",  # the failing measure, for both
+        Measure.CPI_YOY: "insufficient_data:cpi_mom",
     }
     assert result.contracts == ()
     assert result.model_version is None
@@ -344,7 +385,7 @@ async def test_insufficient_data_from_stub_model(session: AsyncSession) -> None:
     await add_contract(session, release, "A")
     models = {Series.CPI: RaisingModel(InsufficientData("cpi_mom", 3, 36))}
     result = await price(session, release, models)
-    assert result.unpriceable == {Measure.CPI_MOM: "insufficient_data"}
+    assert result.unpriceable == {Measure.CPI_MOM: "insufficient_data:cpi_mom"}
 
 
 async def test_no_model_marks_unpriceable(session: AsyncSession) -> None:
@@ -389,6 +430,86 @@ async def test_published_release_error_propagates(
         await price_release(session, PROVIDER, release, truth.asof)
 
 
+@pytest.mark.parametrize(
+    "offset",
+    [timedelta(0), timedelta(hours=1), timedelta(days=3)],
+    ids=["at_scheduled", "plus_1h", "plus_3d"],
+)
+@pytest.mark.parametrize("series", [Series.CPI, Series.NFP, Series.FOMC])
+async def test_price_at_or_after_scheduled_at_raises_before_any_model(
+    session: AsyncSession, series: Series, offset: timedelta
+) -> None:
+    """R12: scheduled_at <= asof raises for every series, before the model is called."""
+    release = Release(series=series, period="2026-10", scheduled_at=NOW - offset)
+    session.add(release)
+    await session.commit()
+    model = RecordingModel()
+    with pytest.raises(ValueError, match="release already published as of asof"):
+        await price(session, release, {series: model})
+    assert model.calls == []
+
+
+@pytest.mark.parametrize("series", [Series.CPI, Series.NFP, Series.FOMC])
+async def test_price_one_microsecond_before_scheduled_at_still_prices(
+    session: AsyncSession, series: Series
+) -> None:
+    release = Release(series=series, period="2026-10", scheduled_at=NOW + timedelta(microseconds=1))
+    session.add(release)
+    await session.commit()
+    model = RecordingModel()
+    result = await price(session, release, {series: model})
+    assert len(model.calls) == 1
+    assert result.model_version == "stub-v1"
+
+
+async def test_cpi_inside_vintage_window_after_release_time_raises(
+    session: AsyncSession, seed_synthetic_cpi: Seeder
+) -> None:
+    """The CPI vintage is stamped 00:00 ET on D+1, so the model's own guard stays silent from
+    the 08:30 ET release until midnight; price_release must still refuse (R12)."""
+    truth = await seed_synthetic_cpi(session)
+    release_time = truth.ref_first_vintage - timedelta(hours=15, minutes=30)  # 08:30 ET on D
+    release = Release(
+        series=Series.CPI, period=f"{truth.ref_month:%Y-%m}", scheduled_at=release_time
+    )
+    session.add(release)
+    await session.commit()
+    asof = release_time + timedelta(hours=1)
+    assert asof < truth.ref_first_vintage  # the model's own R7 guard would not fire here
+    out = await MODELS[Series.CPI].predict(session, PROVIDER, release, asof)  # prices fine
+    assert out.model_version == "cpi-ridge-v1"
+    with pytest.raises(ValueError, match="release already published as of asof"):
+        await price_release(session, PROVIDER, release, asof)
+    # Just before the release it still prices.
+    await price_release(session, PROVIDER, release, release_time - timedelta(microseconds=1))
+
+
+@pytest.mark.parametrize("qty", [0, -1])
+async def test_probe_qty_below_one_raises_even_with_no_books(
+    session: AsyncSession, qty: int
+) -> None:
+    """m2: validated at entry, so it cannot hide behind missing snapshots or R11's catches."""
+    release = await make_release(session)
+    await add_contract(session, release, "A")  # mapped, but no snapshot at all
+    model = RecordingModel()
+    with pytest.raises(ValueError, match="probe_qty"):
+        await price(session, release, {Series.CPI: model}, probe_qty=qty)
+    assert model.calls == []
+
+
+async def test_negative_max_quote_age_raises_but_zero_is_allowed(session: AsyncSession) -> None:
+    release = await make_release(session)
+    c = await add_contract(session, release, "A")
+    await add_snapshot(session, c, timedelta(0))
+    with pytest.raises(ValueError, match="max_quote_age"):
+        await price(session, release, max_quote_age=timedelta(microseconds=-1))
+    (p,) = (await price(session, release, max_quote_age=timedelta(0))).contracts
+    assert isinstance(p.quote, EdgeQuote)  # age 0 is not > 0
+    (p,) = (await price(session, release, probe_qty=1)).contracts
+    assert isinstance(p.yes, EdgeQuote)
+    assert p.yes.qty == 1
+
+
 async def test_other_model_errors_propagate(session: AsyncSession) -> None:
     release = await make_release(session)
     await add_contract(session, release, "A")
@@ -412,7 +533,9 @@ async def test_contracts_ordered_by_id_and_keys_by_measure(session: AsyncSession
 
 async def test_unpriceable_keys_sorted(session: AsyncSession) -> None:
     release = await make_release(session)
-    await add_contract(session, release, "Z", measure=Measure.NFP_CHANGE, strike="1000", unit="j")
+    await add_contract(
+        session, release, "Z", measure=Measure.NFP_CHANGE, strike="1000", precision=-3, unit="jobs"
+    )
     await add_contract(session, release, "Y", measure=Measure.CORE_CPI_YOY, strike="3.0")
     await add_contract(session, release, "X", measure=Measure.CORE_CPI_MOM, strike="0.3")
     result = await price(session, release, models={})
@@ -547,6 +670,7 @@ async def test_inputs_hash_matches_documented_payload(session: AsyncSession) -> 
         ],
         "unpriceable": {"nfp_change": "no_distribution"},
         "rejected": {},
+        "polymarket_event_sizes": {"P": 1},
         "probe_qty": 10,
         "max_quote_age_us": 60_000_000,
         "fee_schedules": {
@@ -599,11 +723,22 @@ async def test_terms_change_with_same_rules_text_moves_fair_and_hash(
 ) -> None:
     release, a, _ = await _hashed_world(session)
     before = await price(session, release)
-    a.resolution_precision = 2
+    a.strike_lo = D("0.2")  # spec-valid; rules_text untouched
     await session.commit()
     after = await price(session, release)
+    assert [p.contract_id for p in after.contracts] == [p.contract_id for p in before.contracts]
+    assert after.contracts[0].contract_id == a.id
     assert after.contracts[0].fair_yes != before.contracts[0].fair_yes
     assert after.inputs_hash != before.inputs_hash
+
+
+async def test_spec_mismatch_after_remap_is_rejected_not_priced(session: AsyncSession) -> None:
+    release, a, b = await _hashed_world(session)
+    a.resolution_precision = 2  # same rules text, now off MEASURE_SPECS
+    await session.commit()
+    result = await price(session, release)
+    assert result.rejected == {a.id: "bad_terms"}
+    assert [p.contract_id for p in result.contracts] == [b.id]
 
 
 async def test_inputs_hash_sensitive_to_unpriced_mapped_contract(session: AsyncSession) -> None:
@@ -626,6 +761,20 @@ async def test_inputs_hash_sensitive_to_unpriceable_reason(session: AsyncSession
     assert h_none != h_insufficient
 
 
+async def test_inputs_hash_sensitive_to_which_measure_lacked_data(session: AsyncSession) -> None:
+    release = await make_release(session)
+    await add_contract(session, release, "A")
+    h_mom = (
+        await price(
+            session, release, {Series.CPI: RaisingModel(InsufficientData("cpi_mom", 3, 36))}
+        )
+    ).inputs_hash
+    h_rates = (
+        await price(session, release, {Series.CPI: RaisingModel(InsufficientData("rates", 3, 36))})
+    ).inputs_hash
+    assert h_mom != h_rates
+
+
 async def test_inputs_hash_sensitive_to_rejected(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -643,6 +792,70 @@ async def test_inputs_hash_sensitive_to_rejected(
     monkeypatch.setattr(release_mod, "terms_from_row", reject_b)
     after = await price(session, release)
     assert after.rejected == {bad.id: "bad_terms"}
+    assert after.inputs_hash != before.inputs_hash
+
+
+@pytest.mark.parametrize(
+    ("raw", "text"),
+    [
+        ("0.3000", "0.3"),
+        ("0.3", "0.3"),
+        ("-0", "0"),
+        ("-0.0000", "0"),
+        ("0", "0"),
+        ("0.00", "0"),
+        ("1E+2", "100"),
+        ("150000.0000", "150000"),
+        ("-0.25", "-0.25"),
+    ],
+)
+def test_dec_is_scale_independent_and_has_no_negative_zero(raw: str, text: str) -> None:
+    assert release_mod._dec(D(raw)) == text
+
+
+@pytest.mark.parametrize("bad", ["NaN", "sNaN", "Infinity", "-Infinity"])
+def test_dec_rejects_non_finite(bad: str) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        release_mod._dec(D(bad))
+
+
+def test_dec_none_is_none() -> None:
+    assert release_mod._dec(None) is None
+
+
+async def test_nan_strike_is_rejected_and_hashed_without_aborting(session: AsyncSession) -> None:
+    release, a, b = await _hashed_world(session)
+    finite = await price(session, release)
+    a.strike_lo = D("NaN")  # NUMERIC(14, 4) accepts NaN (but not Infinity)
+    await session.commit()
+    nan = await price(session, release)
+    assert nan.rejected == {a.id: "bad_terms"}
+    assert [p.contract_id for p in nan.contracts] == [b.id]
+    assert nan.inputs_hash != finite.inputs_hash
+
+
+@pytest.mark.parametrize(
+    ("raw", "text"), [("NaN", "NaN"), ("Infinity", "Infinity"), ("0.30", "0.3")]
+)
+def test_strike_text(raw: str, text: str) -> None:
+    assert release_mod._strike_text(D(raw)) == text
+    assert release_mod._strike_text(None) is None
+
+
+async def test_inputs_hash_sensitive_to_unmapped_polymarket_sibling(
+    session: AsyncSession,
+) -> None:
+    """I4: an unmapped (or other-release) sibling changes the bracket's size n, hence the
+    coherence verdict, hence must change the hash even though no priced input moved."""
+    release, _, _ = await _hashed_world(session)  # polymarket event "P" has one priced contract
+    before = await price(session, release)
+    await add_contract(
+        session, None, "Psib", venue=Venue.POLYMARKET, event="P", status=MappingStatus.UNMAPPED
+    )
+    after = await price(session, release)
+    assert after.contracts == before.contracts
+    assert after.coherence == ("polymarket event P: incomplete bracket (1 of 2 mapped)",)
+    assert before.coherence == ("polymarket event P: incomplete bracket (1 of 1 mapped)",)
     assert after.inputs_hash != before.inputs_hash
 
 
@@ -746,38 +959,96 @@ async def test_inputs_hash_defined_when_nothing_priced(session: AsyncSession) ->
 # ---- per-contract rejection (R11) -------------------------------------------------------------
 
 
-async def test_malformed_contracts_rejected_alone(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_malformed_contracts_rejected_alone(session: AsyncSession) -> None:
     release = await make_release(session)
     good = await add_contract(session, release, "G")
     await add_snapshot(session, good)
-    # The mapped_complete CHECK now forbids a MAPPED row with NULL unit, so bad_terms is driven
-    # by making terms_from_row raise for one real row (as it does for such a row).
     no_hi = await add_contract(  # BETWEEN needs strike_hi
         session, release, "BT", comparator=Comparator.BETWEEN, strike="0.2"
     )
-    bad = await add_contract(session, release, "BAD")
-    real = terms_from_row
+    inverted = await add_contract(
+        session, release, "INV", comparator=Comparator.BETWEEN, strike="0.5", strike_hi="0.2"
+    )
+    bp = await add_contract(session, release, "BP", unit="bp", strike="0")  # not a CPI unit
+    stale = await add_contract(  # a rules:v1 NFP row: precision 0 instead of -3
+        session,
+        release,
+        "V1",
+        measure=Measure.NFP_CHANGE,
+        strike="150000",
+        precision=0,
+        unit="jobs",
+    )
+    nan = await add_contract(session, release, "NAN", strike="NaN")  # NUMERIC accepts NaN
+    other = await add_contract(session, release, "G2", strike="0.4")
+    await add_snapshot(session, other)
 
-    def maybe_raise(row: EventContract) -> Any:
-        if row.id == bad.id:
-            raise ValueError("unit is NULL")
-        return real(row)
+    result = await price(session, release)
+    assert [p.contract_id for p in result.contracts] == [good.id, other.id]
+    assert result.rejected == {
+        no_hi.id: "bad_terms",
+        inverted.id: "bad_terms",
+        bp.id: "bad_terms",
+        stale.id: "bad_terms",
+        nan.id: "bad_terms",
+    }
+    assert list(result.rejected) == sorted(result.rejected)
+    assert isinstance(result.rejected, MappingProxyType)
+    assert result.unpriceable == {}  # a rejected contract's measure is not "unpriceable"
 
-    monkeypatch.setattr(release_mod, "terms_from_row", maybe_raise)
-    bp = await add_contract(session, release, "BP", unit="bp", strike="0")
 
+class CategoricalStub:
+    """Returns a categorical for a continuous measure: every CPI contract then mismatches."""
+
+    series = Series.CPI
+    model_version = "categorical-stub"
+
+    async def predict(
+        self, session: AsyncSession, provider: MacroDataProvider, release: Release, asof: datetime
+    ) -> ModelOutput:
+        dist = Categorical(((0, D("1")),))
+        return ModelOutput(self.model_version, {Measure.CPI_MOM: dist}, 1, {})
+
+
+async def test_distribution_family_mismatch_rejected_alone(session: AsyncSession) -> None:
+    release = await make_release(session)
+    a = await add_contract(session, release, "A")
+    result = await price(session, release, {Series.CPI: CategoricalStub()})
+    assert result.contracts == ()
+    assert result.rejected == {a.id: "terms_distribution_mismatch"}
+
+
+@pytest.mark.parametrize("exc", [InvalidOperation("bad"), DivisionByZero("bad"), Overflow("bad")])
+async def test_arithmetic_errors_reject_the_contract_alone(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, exc: ArithmeticError
+) -> None:
+    """I3: the per-contract catches cover ArithmeticError (InvalidOperation etc.), not just
+    ValueError, for both terms_from_row and fair_prob."""
+    release = await make_release(session)
+    good = await add_contract(session, release, "G")
+    await add_snapshot(session, good)
+    bad_terms = await add_contract(session, release, "BT", strike="0.1")
+    bad_fair = await add_contract(session, release, "BF", strike="0.2")
+    real_terms, real_fair = terms_from_row, fair_prob
+
+    def terms(row: EventContract) -> Any:
+        if row.id == bad_terms.id:
+            raise exc
+        return real_terms(row)
+
+    def fair(t: Any, dist: Any) -> Any:
+        if t.strike_lo == D("0.2"):
+            raise exc
+        return real_fair(t, dist)
+
+    monkeypatch.setattr(release_mod, "terms_from_row", terms)
+    monkeypatch.setattr(release_mod, "fair_prob", fair)
     result = await price(session, release)
     assert [p.contract_id for p in result.contracts] == [good.id]
     assert result.rejected == {
-        no_hi.id: "terms_distribution_mismatch",
-        bad.id: "bad_terms",
-        bp.id: "terms_distribution_mismatch",
+        bad_terms.id: "bad_terms",
+        bad_fair.id: "terms_distribution_mismatch",
     }
-    assert list(result.rejected) == sorted(result.rejected)  # bad_terms was found first
-    assert isinstance(result.rejected, MappingProxyType)
-    assert result.unpriceable == {}
 
 
 # ---- coherence ------------------------------------------------------------------------------
@@ -896,29 +1167,36 @@ async def test_bracket_lone_contract_is_incomplete(session: AsyncSession) -> Non
     assert result.coherence == ("polymarket event LONE: incomplete bracket (1 of 1 mapped)",)
 
 
-async def test_coherence_reports_sorted_violations(session: AsyncSession) -> None:
+async def test_coherence_reports_sorted_violations(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
     release = await make_release(session)
-    # Same strike on different reporting grids gives different probabilities: a monotonic
-    # violation (equal strikes, unequal probabilities).
-    await add_contract(session, release, "K1", strike="0.3", precision=1)
-    await add_contract(session, release, "K2", strike="0.3", precision=2)
+    # A single distribution never yields a non-monotonic ladder, so the two off-grid GT strikes
+    # (0.25, 0.35) are given inverted probabilities: more mass at the higher strike.
+    forced = {D("0.25"): D("0.2"), D("0.35"): D("0.6")}
+    real = fair_prob
+
+    def skewed(terms: Any, dist: Any) -> Any:
+        if terms.comparator == Comparator.GT and terms.strike_lo in forced:
+            return to_prob(forced[terms.strike_lo])
+        return real(terms, dist)
+
+    monkeypatch.setattr(release_mod, "fair_prob", skewed)
+    await add_contract(session, release, "K1", strike="0.25")
+    await add_contract(session, release, "K2", strike="0.35")
     # On Polymarket the same pair, as one event, is also not a partition; the second event is a
     # complete partition with a bad sum.
-    await add_contract(
-        session, release, "P1", venue=Venue.POLYMARKET, event="PM", strike="0.3", precision=1
-    )
-    await add_contract(
-        session, release, "P2", venue=Venue.POLYMARKET, event="PM", strike="0.3", precision=2
-    )
+    await add_contract(session, release, "P1", venue=Venue.POLYMARKET, event="PM", strike="0.25")
+    await add_contract(session, release, "P2", venue=Venue.POLYMARKET, event="PM", strike="0.35")
     await _bracket(session, release, "PS", [PARTITION[0], PARTITION[1], PARTITION[4]], "S")
     result = await price(session, release)
     assert len(result.coherence) == 4
     assert result.coherence == tuple(sorted(result.coherence))
     kalshi, incomplete, bad_sum, poly = result.coherence
-    assert kalshi.startswith("kalshi: cpi_mom gt: strike 0.3000 prob ")
+    assert kalshi.startswith("kalshi: cpi_mom gt: strike 0.2500 prob 0.20000 vs strike 0.3500")
     assert incomplete == "polymarket event PM: incomplete bracket (2 of 2 mapped)"
     assert bad_sum.startswith("polymarket event PS: bracket probabilities sum to ")
-    assert poly.startswith("polymarket: cpi_mom gt: strike 0.3000 prob ")
+    assert poly.startswith("polymarket: cpi_mom gt: strike 0.2500 prob 0.20000 vs strike 0.3500")
 
 
 # ---- read-only ------------------------------------------------------------------------------
@@ -955,6 +1233,43 @@ async def test_callers_pending_and_dirty_state_is_not_autoflushed(session: Async
     left = (
         await session.execute(
             select(func.count()).select_from(Release).where(Release.period == "pending")
+        )
+    ).scalar_one()
+    assert left == 0
+
+
+class QueryingModel:
+    """Runs its own ORM query inside predict, which would autoflush a pending object."""
+
+    series = Series.CPI
+    model_version = "querying"
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    async def predict(
+        self, session: AsyncSession, provider: MacroDataProvider, release: Release, asof: datetime
+    ) -> ModelOutput:
+        rows = (await session.execute(select(Release))).scalars().all()
+        self.seen = sorted(r.period for r in rows)
+        return await StubModel().predict(session, provider, release, asof)
+
+
+async def test_model_queries_do_not_autoflush_callers_pending_objects(
+    session: AsyncSession,
+) -> None:
+    release, _, _ = await _hashed_world(session)
+    pending = Release(series=Series.NFP, period="pending-from-model", scheduled_at=NOW)
+    session.add(pending)
+    model = QueryingModel()
+    await price(session, release, {Series.CPI: model})
+    assert model.seen == ["2026-10"]  # the model's own select ran, but never saw the pending row
+    assert pending in session.new
+    assert pending.id is None
+    await session.rollback()
+    left = (
+        await session.execute(
+            select(func.count()).select_from(Release).where(Release.period == "pending-from-model")
         )
     ).scalar_one()
     assert left == 0

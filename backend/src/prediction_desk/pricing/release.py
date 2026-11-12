@@ -17,7 +17,15 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from types import MappingProxyType
 
 from sqlalchemy import func, select
@@ -45,8 +53,17 @@ PRICING_VERSION = "pricing:v1"
 _LOWER = {Comparator.LT, Comparator.LTE}
 _UPPER = {Comparator.GT, Comparator.GTE}
 
+# The pinned Decimal context for the whole of price_release (I2): the result must not depend on
+# whatever context the caller's task happens to carry. ``localcontext`` copies it.
+_DECIMAL_CONTEXT = Context(
+    prec=28, rounding=ROUND_HALF_EVEN, traps=[InvalidOperation, DivisionByZero, Overflow]
+)
+
 # Everything OrderBook.from_json can raise on a malformed stored book.
 _BAD_BOOK = (KeyError, TypeError, ValueError, InvalidOperation)
+
+# What a malformed mapped contract can raise in terms_from_row / fair_prob (R11 + I3).
+_BAD_CONTRACT = (ValueError, ArithmeticError)
 
 
 @dataclass(frozen=True)
@@ -125,8 +142,24 @@ async def _quotes(
 
 
 def _dec(value: Decimal | None) -> str | None:
-    """Scale-independent text (DB ``0.3000`` and in-memory ``0.3`` hash alike)."""
-    return None if value is None else format(value.normalize(), "f")
+    """Scale-independent text (DB ``0.3000`` and in-memory ``0.3`` hash alike); zero is ``"0"``
+    whatever its sign or scale. Non-finite values have no canonical text: ValueError."""
+    if value is None:
+        return None
+    if not value.is_finite():
+        raise ValueError(f"cannot hash a non-finite Decimal: {value}")
+    if value == 0:
+        return "0"
+    return format(value.normalize(), "f")
+
+
+def _strike_text(value: Decimal | None) -> str | None:
+    """A stored strike for the hash. A NaN/Inf strike (Postgres NUMERIC accepts both) belongs to
+    a contract that ``terms_from_row`` rejects as ``bad_terms``; it is still an input, so it
+    hashes as its own text rather than aborting the release."""
+    if value is not None and not value.is_finite():
+        return str(value)
+    return _dec(value)
 
 
 def _is_partition(comparators: list[Comparator]) -> bool:
@@ -134,8 +167,23 @@ def _is_partition(comparators: list[Comparator]) -> bool:
     return sum(c in _LOWER for c in comparators) == 1 and sum(c in _UPPER for c in comparators) == 1
 
 
-async def _coherence(
-    session: AsyncSession, priced: list[tuple[ContractPricing, EventContract]]
+async def _event_sizes(session: AsyncSession, event_ids: Sequence[str]) -> dict[str, int]:
+    """Row count per Polymarket event, any mapping status or release (R10's ``n``)."""
+    if not event_ids:
+        return {}
+    counts = await session.execute(
+        select(EventContract.venue_event_id, func.count())
+        .where(
+            EventContract.venue == Venue.POLYMARKET,
+            EventContract.venue_event_id.in_(list(event_ids)),
+        )
+        .group_by(EventContract.venue_event_id)
+    )
+    return {event_id: n for event_id, n in sorted(counts)}
+
+
+def _coherence(
+    priced: list[tuple[ContractPricing, EventContract]], totals: Mapping[str, int]
 ) -> tuple[str, ...]:
     """Monotonic ladders per venue; Polymarket brackets (R10)."""
     out: list[str] = []
@@ -150,17 +198,6 @@ async def _coherence(
             f"{venue.value}: {msg}"
             for msg in monotonic_violations([(c.terms, c.fair_yes) for c in members])
         )
-    totals: dict[str, int] = {}
-    if by_event:
-        counts = await session.execute(
-            select(EventContract.venue_event_id, func.count())
-            .where(
-                EventContract.venue == Venue.POLYMARKET,
-                EventContract.venue_event_id.in_(list(by_event)),
-            )
-            .group_by(EventContract.venue_event_id)
-        )
-        totals = {event_id: n for event_id, n in counts}
     for event_id, members in by_event.items():
         k, n = len(members), totals[event_id]
         if k == n and _is_partition([c.terms.comparator for c in members]):
@@ -190,13 +227,26 @@ async def price_release(
     ``asof``) propagates. A malformed mapped contract is skipped alone and listed in
     ``rejected`` (R11). A missing, stale or corrupt book makes that contract's quotes
     ``Unavailable`` without aborting the rest. ``fee_schedules=None`` uses the packaged ones.
+
+    Raises ``ValueError`` for ``probe_qty < 1`` or a negative ``max_quote_age`` (a bad argument
+    must not hide behind missing books), and ``ValueError("release already published as of
+    asof")`` when ``release.scheduled_at <= asof``, before any model runs (R12): CPI/NFP
+    vintages are stamped 00:00 ET on the next day, so their own guard leaves an 08:30 ->
+    midnight window.
     """
-    with session.no_autoflush:
+    if probe_qty < 1:
+        raise ValueError(f"probe_qty must be >= 1: {probe_qty}")
+    if max_quote_age < timedelta(0):
+        raise ValueError(f"max_quote_age must be >= 0: {max_quote_age}")
+    asof = require_utc(asof)
+    if release.scheduled_at <= asof:
+        raise ValueError("release already published as of asof")
+    with session.no_autoflush, localcontext(_DECIMAL_CONTEXT):
         return await _price_release(
             session,
             provider,
             release,
-            require_utc(asof),
+            asof,
             probe_qty,
             max_quote_age,
             models,
@@ -233,7 +283,7 @@ async def _price_release(
     for row in rows:
         try:
             terms_by_id[row.id] = terms_from_row(row)
-        except ValueError:
+        except _BAD_CONTRACT:
             rejected[row.id] = "bad_terms"
 
     model_version: str | None = None
@@ -246,8 +296,8 @@ async def _price_release(
     else:
         try:
             out = await model.predict(session, provider, release, asof)
-        except InsufficientData:
-            unpriceable = dict.fromkeys(needed, "insufficient_data")
+        except InsufficientData as exc:
+            unpriceable = dict.fromkeys(needed, f"insufficient_data:{exc.measure}")
         else:
             model_version = out.model_version
             dists = out.distributions
@@ -263,7 +313,7 @@ async def _price_release(
             continue
         try:
             fair_yes = fair_prob(terms, dist)
-        except ValueError:
+        except _BAD_CONTRACT:
             rejected[row.id] = "terms_distribution_mismatch"
             continue
         pricing = await _quotes(
@@ -272,6 +322,11 @@ async def _price_release(
         priced.append((pricing, row))
 
     snapshot_ids = {p.contract_id: p.snapshot_id for p, _ in priced}
+    # Bracket sizes are an input to the coherence verdict (an unmapped sibling changes n), so
+    # they belong in the hash (I4).
+    event_sizes = await _event_sizes(
+        session, sorted({r.venue_event_id for p, r in priced if p.venue == Venue.POLYMARKET})
+    )
     distributions = {
         m: MappingProxyType({"family": d.family, **d.params()})
         for m, d in sorted(dists.items(), key=lambda kv: kv[0].value)
@@ -291,8 +346,8 @@ async def _price_release(
                 "id": row.id,
                 "measure": row.measure,
                 "comparator": row.comparator,
-                "strike_lo": _dec(row.strike_lo),
-                "strike_hi": _dec(row.strike_hi),
+                "strike_lo": _strike_text(row.strike_lo),
+                "strike_hi": _strike_text(row.strike_hi),
                 "unit": row.unit,
                 "resolution_precision": row.resolution_precision,
                 "resolution_source": row.resolution_source,
@@ -303,6 +358,7 @@ async def _price_release(
         ],
         "unpriceable": {m.value: reason for m, reason in unpriceable_sorted.items()},
         "rejected": {str(cid): reason for cid, reason in rejected_sorted.items()},
+        "polymarket_event_sizes": event_sizes,
         "probe_qty": probe_qty,
         "max_quote_age_us": max_quote_age // timedelta(microseconds=1),
         "fee_schedules": {
@@ -318,6 +374,6 @@ async def _price_release(
         contracts=tuple(p for p, _ in priced),
         unpriceable=MappingProxyType(unpriceable_sorted),
         rejected=MappingProxyType(rejected_sorted),
-        coherence=await _coherence(session, priced),
+        coherence=_coherence(priced, event_sizes),
         inputs_hash=hashlib.sha256(canonical_json(payload)).hexdigest(),
     )

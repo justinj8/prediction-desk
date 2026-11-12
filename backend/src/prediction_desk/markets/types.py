@@ -122,7 +122,16 @@ class OrderBook:
         ts: datetime,
         venue_ts: datetime | None = None,
     ) -> "OrderBook":
-        """Inverse of ``to_json``; raises ValueError on any malformed level."""
+        """Inverse of ``to_json``.
+
+        Raises on a malformed stored book, so callers reading snapshot JSON must catch all of:
+        ``KeyError`` (no ``"bids"``/``"asks"`` key), ``TypeError`` (``book`` is not a mapping),
+        ``ValueError`` (a side or level that is not a well-formed ``[price, size]`` string pair,
+        a non-numeric level, a price outside [0, 1], a bad size, unordered levels, a non-UTC
+        timestamp) and ``decimal.InvalidOperation``. Unparseable numbers are normally converted
+        to ``ValueError``, but ``InvalidOperation`` is part of the contract so a caller's catch
+        does not depend on that detail.
+        """
         return cls(
             bids=_parse_levels(book["bids"]),
             asks=_parse_levels(book["asks"]),
