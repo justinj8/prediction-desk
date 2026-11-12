@@ -1,0 +1,4 @@
+# Versioned venue fee schedules. Lookups are as-of, so replay prices with the schedule then in force.
+schedules:
+  - {venue: kalshi, effective_from: "2024-01-01", kind: kalshi_quadratic, rate: "0.07"}
+  - {venue: polymarket, effective_from: "2024-01-01", kind: zero}

@@ -96,7 +96,8 @@ class EventContract(Base):
         UniqueConstraint("venue", "venue_market_id"),
         CheckConstraint(
             "mapping_status <> 'mapped' OR (release_id IS NOT NULL AND measure IS NOT NULL "
-            "AND comparator IS NOT NULL AND strike_lo IS NOT NULL)",
+            "AND comparator IS NOT NULL AND strike_lo IS NOT NULL AND unit IS NOT NULL "
+            "AND resolution_precision IS NOT NULL AND resolution_source IS NOT NULL)",
             name="mapped_complete",
         ),
         CheckConstraint("mapping_confidence BETWEEN 0 AND 1", name="confidence_range"),
