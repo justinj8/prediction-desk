@@ -2,7 +2,9 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_FLOOR, Decimal
+from fractions import Fraction
+from math import ceil, floor
 
 from prediction_desk.domain.types import Prob, to_prob
 from prediction_desk.markets.types import BookLevel
@@ -16,10 +18,6 @@ _CENT = Decimal(100)
 
 def _floor_int(value: Decimal) -> int:
     return int(value.to_integral_value(rounding=ROUND_FLOOR))
-
-
-def _ceil_int(value: Decimal) -> int:
-    return int(value.to_integral_value(rounding=ROUND_CEILING))
 
 
 def clamp_fair(p: Prob, lo: Decimal, hi: Decimal) -> Prob:
@@ -36,7 +34,7 @@ def kelly_fraction(q: Decimal, c: Decimal) -> Decimal:
     return (q - c) / (_ONE - c)
 
 
-def _marginal_fee(price: Decimal, schedule: FeeSchedule) -> Decimal:
+def marginal_fee(price: Decimal, schedule: FeeSchedule) -> Decimal:
     if schedule.kind == "kalshi_quadratic":
         return schedule.rate * price * (_ONE - price)
     return _ZERO
@@ -48,7 +46,7 @@ def limit_price(
     """D4: last best-first level price whose edge net of marginal fee clears ``min_edge``."""
     limit: Decimal | None = None
     for level in levels:
-        if q - level.price - _marginal_fee(level.price, schedule) < min_edge:
+        if q - level.price - marginal_fee(level.price, schedule) < min_edge:
             break
         limit = level.price
     return limit
@@ -69,6 +67,9 @@ class SizingInputs:
     held_portfolio_cents: int
     depth: Decimal  # contracts available at or better than ``limit``
     limit: Decimal
+    # Worst per-contract cost of a fill: ``limit + marginal_fee(limit)``. Caps and rounding
+    # use ``max(c, worst_cost)`` because an IOC order can fill up to ``limit``.
+    worst_cost: Decimal
 
 
 @dataclass(frozen=True)
@@ -106,16 +107,22 @@ def size_order(inputs: SizingInputs, limits: RiskLimits) -> Sizing:
         stake = min(stake, headroom)
         reasons.append({"step": name, "cents": str(stake)})
 
-    cost_cents = inputs.c * _CENT
+    cost_cents = max(inputs.c, inputs.worst_cost) * _CENT
     liq_qty = _floor_int(limits.liquidity_fraction * inputs.depth)
     reasons.append(
         {"step": "liquidity", "cents": str(_floor_int(liq_qty * cost_cents)), "qty": str(liq_qty)}
     )
 
-    qty = min(_floor_int(Decimal(stake) / cost_cents), liq_qty)
+    # Exact rational arithmetic: Decimal division/multiplication is limited to 28 digits and
+    # could round qty up past the headroom.
+    exact_cost = Fraction(cost_cents)
+    qty = min(floor(Fraction(stake) / exact_cost), liq_qty)
+    worst = str(max(inputs.c, inputs.worst_cost))
     if qty < 1:
-        reasons.append({"step": "round", "cents": "0", "qty": "0"})
+        reasons.append({"step": "round", "cents": "0", "qty": "0", "worst_cost": worst})
         return reject("below_min_size", kelly_raw)
-    stake_cents = _ceil_int(qty * cost_cents)
-    reasons.append({"step": "round", "cents": str(stake_cents), "qty": str(qty)})
+    stake_cents = ceil(qty * exact_cost)
+    reasons.append(
+        {"step": "round", "cents": str(stake_cents), "qty": str(qty), "worst_cost": worst}
+    )
     return Sizing(kelly_raw, stake_cents, qty, tuple(reasons), None)
