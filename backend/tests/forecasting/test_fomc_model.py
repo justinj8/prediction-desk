@@ -80,16 +80,16 @@ async def test_no_change_priced_flat(session: AsyncSession, seed_synthetic_rates
         "fomc.implied_bp",
         "fomc.n_spread",
     }
-    # Stored NUMERICs carry trailing zeros; compare values, not strings.
-    assert D(diag["fomc.dff"]) == D("5.33")
-    assert D(diag["fomc.bill"]) == D("5.35")
-    assert D(diag["fomc.spread"]) == D("0.02")
-    assert D(diag["fomc.implied_bp"]) == 0
-    assert (diag["fomc.days_to"], diag["fomc.frac_after"], diag["fomc.n_spread"]) == (
-        "0",
-        "1",
-        "250",
-    )
+    # Diagnostics are quantized to 1e-6 (as in cpi.py), independent of the DB NUMERIC scale.
+    assert dict(diag) == {
+        "fomc.dff": "5.330000",
+        "fomc.bill": "5.350000",
+        "fomc.spread": "0.020000",
+        "fomc.days_to": "0",
+        "fomc.frac_after": "1.000000",
+        "fomc.implied_bp": "0.000000",
+        "fomc.n_spread": "250",
+    }
 
 
 async def test_implied_cut_interpolates(
@@ -139,10 +139,10 @@ async def test_far_meeting_uses_prior_only(
     assert probs(out) == expected(**{"0": "1"})
     assert out.diagnostics["fomc.implied_bp"] == "n/a"
     assert out.diagnostics["fomc.days_to"] == "25"
-    assert out.diagnostics["fomc.frac_after"] == str(D(3) / D(28))
+    assert out.diagnostics["fomc.frac_after"] == "0.107143"
     # beyond 28 days the fraction is 0
     far = await predict(session, truth, days_to=40)
-    assert far.diagnostics["fomc.frac_after"] == "0"
+    assert far.diagnostics["fomc.frac_after"] == "0.000000"
     assert probs(far) == expected(**{"0": "1"})
 
 
@@ -153,7 +153,7 @@ async def test_frac_after_boundary_is_inclusive(
     truth = await seed_synthetic_rates(session, last_obs=LAST_OBS, last_gap=D("-0.025"))
     out = await predict(session, truth, days_to=21)
     assert probs(out) == expected(m25="0.2", **{"0": "0.8"})
-    assert out.diagnostics["fomc.frac_after"] == "0.25"
+    assert out.diagnostics["fomc.frac_after"] == "0.250000"
 
 
 async def test_clamp_extremes(session: AsyncSession, seed_synthetic_rates: Seeder) -> None:
@@ -314,3 +314,109 @@ async def test_spread_odd_count_takes_middle_value(
     truth = await seed_synthetic_rates(session, last_obs=LAST_OBS, days=21, shocks=shocks)
     out = await predict(session, truth)
     assert D(out.diagnostics["fomc.spread"]) == D("0.04")
+
+
+async def test_latest_rates_are_used_not_oldest(
+    session: AsyncSession, seed_synthetic_rates: Seeder
+) -> None:
+    # DFF stepped up on the last day (bill = DFF + spread): latest, not oldest, must be read.
+    older = {b: D("5.33") for b in range(1, 300)}
+    truth = await seed_synthetic_rates(session, last_obs=LAST_OBS, dff=D("5.58"), dff_by_back=older)
+    out = await predict(session, truth)
+    assert out.diagnostics["fomc.dff"] == "5.580000"
+    assert out.diagnostics["fomc.bill"] == "5.600000"
+    assert probs(out) == expected(**{"0": "1"})
+
+
+async def test_spread_uses_last_250_not_oldest_250(
+    session: AsyncSession, seed_synthetic_rates: Seeder
+) -> None:
+    # 400 paired days; the oldest 150 (back 250..399) carry a +1.00 shock. The last 250 are
+    # clean, so spread 0.02; the oldest 250 would be 60% shocked (median 1.02).
+    shocks = {b: D("1.00") for b in range(250, 400)}
+    truth = await seed_synthetic_rates(session, last_obs=LAST_OBS, days=400, shocks=shocks)
+    out = await predict(session, truth)
+    assert out.n_train == 250
+    assert out.diagnostics["fomc.spread"] == "0.020000"
+    assert out.diagnostics["fomc.n_spread"] == "250"
+
+
+async def test_spread_ignores_pairs_older_than_400_days(
+    session: AsyncSession, seed_synthetic_rates: Seeder
+) -> None:
+    # asof ET date = LAST_OBS + 1, so the window starts at LAST_OBS - 399 (inclusive).
+    truth = await seed_synthetic_rates(session, last_obs=LAST_OBS, days=100)
+    # 120 heavily shocked pairs ending one day before the window: must be ignored.
+    old_end = LAST_OBS - timedelta(days=400)
+    await seed_synthetic_rates(
+        session, last_obs=old_end, days=120, shocks={b: D("1.00") for b in range(120)}
+    )
+    # A single clean pair exactly on the window start: must be included.
+    await seed_synthetic_rates(session, last_obs=LAST_OBS - timedelta(days=399), days=1)
+    out = await predict(session, truth)
+    assert out.n_train == 101
+    assert out.diagnostics["fomc.spread"] == "0.020000"
+
+
+@pytest.mark.parametrize("which", ["bill", "dff"])
+async def test_stale_series_fails_closed(
+    session: AsyncSession, seed_synthetic_rates: Seeder, which: str
+) -> None:
+    lag = {"dff_lag_days": 0, "bill_lag_days": 0}
+    lag[f"{which}_lag_days"] = 30
+    truth = await seed_synthetic_rates(session, last_obs=LAST_OBS, **lag)
+    with pytest.raises(InsufficientData) as exc:
+        await predict(session, truth)
+    # age = asof ET date - newest obs date = 1 + 30 days
+    assert (exc.value.measure, exc.value.have, exc.value.need) == ("fomc_rates_stale", 31, 7)
+
+
+async def test_staleness_boundary_age_7_passes_8_raises(
+    session: AsyncSession, seed_synthetic_rates: Seeder
+) -> None:
+    # age = 1 + lag
+    ok = await seed_synthetic_rates(session, last_obs=LAST_OBS, bill_lag_days=6)
+    assert (await predict(session, ok)).n_train > 0
+    bad_end = LAST_OBS - timedelta(days=2000)
+    bad = await seed_synthetic_rates(session, last_obs=bad_end, dff_lag_days=7)
+    with pytest.raises(InsufficientData) as exc:
+        await predict(session, bad)
+    assert (exc.value.measure, exc.value.have, exc.value.need) == ("fomc_rates_stale", 8, 7)
+
+
+async def test_staleness_reports_larger_age(
+    session: AsyncSession, seed_synthetic_rates: Seeder
+) -> None:
+    truth = await seed_synthetic_rates(
+        session, last_obs=LAST_OBS, dff_lag_days=10, bill_lag_days=20
+    )
+    with pytest.raises(InsufficientData) as exc:
+        await predict(session, truth)
+    assert exc.value.have == 21
+
+
+async def test_asof_late_evening_et_uses_et_date(
+    session: AsyncSession, seed_synthetic_rates: Seeder
+) -> None:
+    # 21:00 ET on 2026-03-10 is already 2026-03-11 in UTC. ET days_to = 21 -> frac 0.25
+    # (implied -10 -> {-25: .2, 0: .8}); a UTC date would give days_to 20 -> frac 8/28.
+    await seed_synthetic_rates(session, last_obs=date(2026, 3, 9), last_gap=D("-0.025"))
+    asof = datetime(2026, 3, 10, 21, 0, tzinfo=_NY).astimezone(UTC)
+    assert asof.date() == date(2026, 3, 11)
+    out = await FomcModelV1().predict(session, PROVIDER, release_on(date(2026, 3, 31)), asof)
+    assert out.diagnostics["fomc.days_to"] == "21"
+    assert probs(out) == expected(m25="0.2", **{"0": "0.8"})
+
+
+async def test_period_before_asof_date_raises(
+    session: AsyncSession, seed_synthetic_rates: Seeder
+) -> None:
+    truth = await seed_synthetic_rates(session, last_obs=LAST_OBS)
+    # Inconsistent row: period is yesterday (ET) but scheduled_at is still in the future.
+    release = Release(
+        series=Series.FOMC,
+        period=truth.last_obs.isoformat(),
+        scheduled_at=truth.asof + timedelta(days=1),
+    )
+    with pytest.raises(ValueError, match="release period precedes asof date"):
+        await FomcModelV1().predict(session, PROVIDER, release, truth.asof)

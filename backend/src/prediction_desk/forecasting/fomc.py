@@ -8,7 +8,7 @@ exact Decimal. Outcomes are bp; the tails mean "cut >= 50" and "hike >= 50".
 """
 
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from math import floor
 from zoneinfo import ZoneInfo
 
@@ -26,12 +26,19 @@ _NY = ZoneInfo("America/New_York")
 _DFF = "DFF"
 _BILL = "DTB4WK"
 _RATES_HISTORY_DAYS = 400
+MAX_RATE_AGE_DAYS = 7  # ruling R8: stale rates fail closed
+_Q = Decimal("0.000001")
 _BILL_TENOR_DAYS = 28
 _STEP = Decimal(25)
 _CAP = Decimal(50)
 _HUNDRED = Decimal(100)
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
+
+
+def _fmt(x: Decimal) -> str:
+    """Diagnostic string at the same 1e-6 quantum as cpi.py (display only)."""
+    return str(x.quantize(_Q, rounding=ROUND_HALF_EVEN))
 
 
 def _median(values: list[Decimal]) -> Decimal:
@@ -66,6 +73,14 @@ def _interpolate(implied: Decimal) -> dict[Decimal, Decimal]:
 
 
 class FomcModelV1:
+    """Market-implied FOMC model.
+
+    Note (flag for Plan 5): `days_to` is measured from the asof ET calendar date, not from the
+    latest bill observation date. A weekend bill print is 1-3 days older than asof, so
+    `frac_after` is slightly understated (the bill has covered a bit less of the post-meeting
+    window than assumed). Rates older than MAX_RATE_AGE_DAYS fail closed (ruling R8).
+    """
+
     series = Series.FOMC
     model_version = "fomc-implied-v1"
     OUTCOMES = (-50, -25, 0, 25, 50)
@@ -91,8 +106,12 @@ class FomcModelV1:
         bill_pts = await levels_asof(provider, session, _BILL, asof, start)
         if not dff_pts or not bill_pts:
             raise InsufficientData("fomc_rates", 0, 1)
-        dff = dff_pts[max(dff_pts)]
-        bill = bill_pts[max(bill_pts)]
+        dff_date, bill_date = max(dff_pts), max(bill_pts)
+        age_days = max((asof_date - dff_date).days, (asof_date - bill_date).days)
+        if age_days > MAX_RATE_AGE_DAYS:
+            raise InsufficientData("fomc_rates_stale", age_days, MAX_RATE_AGE_DAYS)
+        dff = dff_pts[dff_date]
+        bill = bill_pts[bill_date]
 
         paired = sorted(dff_pts.keys() & bill_pts.keys())[-self.SPREAD_LOOKBACK :]
         if len(paired) < self.MIN_SPREAD_OBS:
@@ -100,6 +119,8 @@ class FomcModelV1:
         spread = _median([bill_pts[d] - dff_pts[d] for d in paired])
 
         days_to = (date.fromisoformat(release.period) - asof_date).days
+        if days_to < 0:
+            raise ValueError("release period precedes asof date")
         frac_after = Decimal(max(0, _BILL_TENOR_DAYS - days_to)) / Decimal(_BILL_TENOR_DAYS)
 
         implied_txt = "n/a"
@@ -108,7 +129,7 @@ class FomcModelV1:
         else:
             raw = (bill - dff - spread) * _HUNDRED / frac_after
             implied = min(max(raw, -_CAP), _CAP)
-            implied_txt = str(implied)
+            implied_txt = _fmt(implied)
             interp = _interpolate(implied)
             nearest = _nearest_grid(implied)
             keep = _ONE - self.PRIOR_WEIGHT
@@ -123,11 +144,11 @@ class FomcModelV1:
             distributions={Measure.FOMC_CHANGE_BP: dist},
             n_train=len(paired),
             diagnostics={
-                "fomc.dff": str(dff),
-                "fomc.bill": str(bill),
-                "fomc.spread": str(spread),
+                "fomc.dff": _fmt(dff),
+                "fomc.bill": _fmt(bill),
+                "fomc.spread": _fmt(spread),
                 "fomc.days_to": str(days_to),
-                "fomc.frac_after": str(frac_after),
+                "fomc.frac_after": _fmt(frac_after),
                 "fomc.implied_bp": implied_txt,
                 "fomc.n_spread": str(len(paired)),
             },
