@@ -51,3 +51,31 @@ MEASURE_SERIES: Mapping[Measure, Series] = {
     Measure.NFP_CHANGE: Series.NFP,
     Measure.FOMC_CHANGE_BP: Series.FOMC,
 }
+
+
+class BookMode(StrEnum):
+    LIVE = "live"
+    REPLAY = "replay"
+
+
+class Slot(StrEnum):
+    T24H = "t-24h"
+    T2H = "t-2h"
+    T15M = "t-15m"
+
+
+class Verdict(StrEnum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class OrderStatus(StrEnum):
+    FILLED = "filled"
+    PARTIAL = "partial"
+    CANCELLED = "cancelled"
+    REFUSED = "refused"
+
+
+class PositionSide(StrEnum):
+    YES = "yes"
+    NO = "no"
