@@ -86,6 +86,7 @@ def _identity(row: EventContract, releases: Mapping[int, Release]) -> tuple[obje
         row.strike_hi,
         row.unit,
         row.resolution_precision,
+        row.resolution_source,
         row.unmapped_reason,
     )
 
@@ -106,6 +107,9 @@ def _payload(
         "comparator": None if row.comparator is None else row.comparator.value,
         "strike_lo": None if strike_lo is None else str(strike_lo),
         "strike_hi": None if strike_hi is None else str(strike_hi),
+        "unit": row.unit,
+        "resolution_precision": row.resolution_precision,
+        "resolution_source": row.resolution_source,
         "status": row.mapping_status.value,
         "reason": row.unmapped_reason,
         "mapper": MAPPER_VERSION,

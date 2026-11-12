@@ -115,6 +115,10 @@ async def test_discovery_maps_and_audits_once(
     assert ev.payload["strike_hi"] is None
     assert ev.payload["reason"] is None
     assert ev.payload["mapper"] == MAPPER_VERSION
+    assert ev.payload["unit"] == "pct"
+    assert ev.payload["resolution_precision"] == 1
+    assert isinstance(ev.payload["resolution_precision"], int)
+    assert ev.payload["resolution_source"] == "BLS"
     row = (await session.execute(select(EventContract))).scalar_one()
     assert row.mapping_status is MappingStatus.MAPPED
     assert row.mapping_confidence == Decimal("1.00")
@@ -168,6 +172,34 @@ async def test_discovery_terms_change_remaps(
     assert row.strike_lo == Decimal("0.4")
 
 
+@pytest.mark.parametrize(
+    ("column", "stale", "expected"),
+    [
+        ("resolution_precision", 0, 1),  # e.g. a rules:v1 row remapped under rules:v2
+        ("resolution_source", "OLD", "BLS"),
+        ("unit", "percent", "pct"),
+    ],
+)
+async def test_precision_unit_or_source_only_remap_is_audited_with_the_new_value(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    column: str,
+    stale: object,
+    expected: object,
+) -> None:
+    await _seed_release(session)
+    adapter = FakeAdapter({"KXCPI": [_market()]})
+    await _run(sessions, adapter)
+    row = (await session.execute(select(EventContract))).scalar_one()
+    setattr(row, column, stale)  # the stored mapping predates the current rules
+    await session.commit()
+    result = await _run(sessions, adapter)
+    assert (result.changed, result.unchanged) == (1, 0)
+    events = (await session.execute(select(AuditEvent).order_by(AuditEvent.seq))).scalars().all()
+    assert [e.action for e in events] == ["contract_mapped", "contract_remapped"]
+    assert events[-1].payload[column] == expected
+
+
 async def test_descriptive_change_is_not_audited(
     session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -196,6 +228,9 @@ async def test_discovery_unmapped_reason_persisted(
     ev = (await session.execute(select(AuditEvent))).scalar_one()
     assert ev.action == "contract_unmapped"
     assert ev.payload["reason"] == "no_release"
+    assert ev.payload["unit"] is None
+    assert ev.payload["resolution_precision"] is None
+    assert ev.payload["resolution_source"] is None
 
 
 async def test_discovery_remaps_when_release_appears(
