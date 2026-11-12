@@ -1,7 +1,15 @@
 import hashlib
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
-from decimal import ROUND_DOWN, Decimal, DivisionByZero, InvalidOperation, Overflow, getcontext
+from decimal import (
+    ROUND_DOWN,
+    ROUND_HALF_EVEN,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    getcontext,
+)
 from types import MappingProxyType
 from typing import Any
 
@@ -211,6 +219,14 @@ async def test_prices_every_mapped_contract(
         if m is not Measure.CORE_CPI_YOY:
             assert core.fair_yes != fair_prob(core.terms, other)
     assert isinstance(result.distributions[Measure.CPI_MOM], MappingProxyType)
+
+
+def test_pinned_decimal_context_is_exactly_specified() -> None:
+    # inputs_hash covers 28-digit param strings, so the pin itself is part of the hash contract.
+    ctx = release_mod._DECIMAL_CONTEXT
+    assert ctx.prec == 28
+    assert ctx.rounding == ROUND_HALF_EVEN
+    assert all(ctx.traps[t] for t in (InvalidOperation, DivisionByZero, Overflow))
 
 
 async def test_result_independent_of_ambient_decimal_context(
