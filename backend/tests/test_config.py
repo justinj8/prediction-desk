@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 from pydantic import ValidationError
 
@@ -69,3 +71,40 @@ def test_settings_repr_hides_database_urls(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.database_url.endswith("s3cret-db@h/db")  # still loaded, just not shown
     for text in (repr(settings), str(settings)):
         assert "s3cret" not in text
+
+
+def test_api_keys_are_secret_and_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/db")
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
+    unset = Settings(_env_file=None)
+    assert unset.fred_api_key is None
+    assert unset.alpha_vantage_api_key is None
+
+    monkeypatch.setenv("FRED_API_KEY", "abc123")
+    settings = Settings(_env_file=None)
+    assert settings.fred_api_key is not None
+    assert settings.fred_api_key.get_secret_value() == "abc123"
+    assert "abc123" not in repr(settings)
+    assert "abc123" not in str(settings)
+
+
+def test_provider_base_url_and_observation_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/db")
+    s = Settings(_env_file=None)
+    assert s.kalshi_api_base == "https://api.elections.kalshi.com/trade-api/v2"
+    assert s.polymarket_gamma_base == "https://gamma-api.polymarket.com"
+    assert s.polymarket_clob_base == "https://clob.polymarket.com"
+    assert s.fred_api_base == "https://api.stlouisfed.org/fred"
+    assert s.alpha_vantage_api_base == "https://www.alphavantage.co"
+    assert s.fred_observation_start == date(2015, 1, 1)
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_api_key_is_none(blank: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/db")
+    monkeypatch.setenv("FRED_API_KEY", blank)
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", blank)
+    s = Settings(_env_file=None)
+    assert s.fred_api_key is None
+    assert s.alpha_vantage_api_key is None
