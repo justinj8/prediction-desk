@@ -5,7 +5,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
-from typing import cast
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import exists, select
@@ -101,11 +100,7 @@ async def exposure(session: AsyncSession, book_id: int) -> Exposure:
     held = await session.execute(
         select(Position.contract_id, EventContract.release_id, Position.cost_cents)
         .join(EventContract, EventContract.id == Position.contract_id)
-        .where(
-            Position.book_id == book_id,
-            Position.settled.is_(False),
-            EventContract.release_id.is_not(None),  # held contracts are always mapped
-        )
+        .where(Position.book_id == book_id, Position.settled.is_(False))
     )
     pending = await session.execute(
         select(
@@ -120,8 +115,25 @@ async def exposure(session: AsyncSession, book_id: int) -> Exposure:
     portfolio = 0
     for contract_id, release_id, maybe_cents in [*held.all(), *pending.all()]:
         cents = maybe_cents or 0  # pending rows are filtered non-null in SQL
+        if release_id is None:
+            # The contract was remapped away from its release; fall back to the release the
+            # book's approved decision named, and fail closed if there is none.
+            release_id = (
+                await session.execute(
+                    select(RiskDecision.release_id)
+                    .where(
+                        RiskDecision.book_id == book_id,
+                        RiskDecision.contract_id == contract_id,
+                        RiskDecision.verdict == Verdict.APPROVED,
+                    )
+                    .order_by(RiskDecision.id)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if release_id is None:
+                raise RuntimeError(f"no release known for held contract {contract_id}")
         by_contract[contract_id] += cents
-        by_event[cast(int, release_id)] += cents
+        by_event[release_id] += cents
         portfolio += cents
     return Exposure(contract=dict(by_contract), event=dict(by_event), portfolio=portfolio)
 

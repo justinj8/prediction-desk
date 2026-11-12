@@ -21,6 +21,7 @@ from prediction_desk.db.uow import unit_of_work
 from prediction_desk.domain.enums import (
     BookMode,
     Comparator,
+    MappingStatus,
     Measure,
     OrderStatus,
     PositionSide,
@@ -45,6 +46,17 @@ async def _contract(
         strike_lo=D(strike),
         venue_event_id=event,
     )
+
+
+async def _unmap(session: AsyncSession, contract_id: int) -> None:
+    """Mirror what discovery's ``_set_mapping`` does to a contract that no longer maps."""
+    row = await session.get(EventContract, contract_id)
+    assert row is not None
+    row.mapping_status = MappingStatus.UNMAPPED
+    row.release_id = None
+    row.measure = row.comparator = row.strike_lo = row.strike_hi = None
+    row.unit = row.resolution_precision = row.resolution_source = None
+    await session.commit()
 
 
 async def _position(
@@ -208,6 +220,35 @@ async def test_exposure_counts_positions_and_unordered_approvals(session: AsyncS
         event={rel_a.id: 500, rel_b.id: 250},
         portfolio=750,
     )
+
+
+async def test_exposure_unchanged_when_held_contract_loses_release(
+    session: AsyncSession,
+) -> None:
+    book = await make_book(session)
+    rel = await make_release(session)
+    c = await _contract(session, rel)
+    await _position(session, book, c, cost=400)
+    await _decision(session, book, c, stake=100, with_order=True)
+    before = await exposure(session, book.id)
+    contract_id, release_id = c.id, rel.id
+    await _unmap(session, contract_id)
+    after = await exposure(session, book.id)
+    assert (
+        after
+        == before
+        == Exposure(contract={contract_id: 400}, event={release_id: 400}, portfolio=400)
+    )
+
+
+async def test_exposure_fails_closed_when_no_release_known(session: AsyncSession) -> None:
+    book = await make_book(session)
+    rel = await make_release(session)
+    c = await _contract(session, rel)
+    await _position(session, book, c, cost=400)
+    await _unmap(session, c.id)
+    with pytest.raises(RuntimeError, match="no release"):
+        await exposure(session, book.id)
 
 
 async def test_exposure_ignores_other_books_and_empty(session: AsyncSession) -> None:
