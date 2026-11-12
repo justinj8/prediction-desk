@@ -44,6 +44,7 @@ from prediction_desk.markets.mapping import ContractTerms
 from prediction_desk.markets.snapshots import latest_snapshot_asof
 from prediction_desk.markets.terms import rules_hash, terms_from_row
 from prediction_desk.markets.types import OrderBook
+from prediction_desk.pricing.coherence import CoherenceViolation
 from prediction_desk.pricing.edge import EdgeQuote, Unavailable, best_side, evaluate_edge
 from prediction_desk.pricing.fair import bracket_sum_violation, fair_prob, monotonic_violations
 from prediction_desk.pricing.fees import FeeSchedule, schedule_for
@@ -88,7 +89,7 @@ class ReleasePricing:
     contracts: tuple[ContractPricing, ...]  # ordered by contract id
     unpriceable: Mapping[Measure, str]  # measure -> reason
     rejected: Mapping[int, str]  # contract id -> "bad_terms" / "terms_distribution_mismatch"
-    coherence: tuple[str, ...]  # sorted violations
+    coherence: tuple[CoherenceViolation, ...]  # sorted
     inputs_hash: str
 
 
@@ -184,9 +185,9 @@ async def _event_sizes(session: AsyncSession, event_ids: Sequence[str]) -> dict[
 
 def _coherence(
     priced: list[tuple[ContractPricing, EventContract]], totals: Mapping[str, int]
-) -> tuple[str, ...]:
+) -> tuple[CoherenceViolation, ...]:
     """Monotonic ladders per venue; Polymarket brackets (R10)."""
-    out: list[str] = []
+    out: list[CoherenceViolation] = []
     by_venue: dict[Venue, list[ContractPricing]] = defaultdict(list)
     by_event: dict[str, list[ContractPricing]] = defaultdict(list)
     for pricing, row in priced:
@@ -195,7 +196,7 @@ def _coherence(
             by_event[row.venue_event_id].append(pricing)
     for venue, members in by_venue.items():
         out.extend(
-            f"{venue.value}: {msg}"
+            CoherenceViolation("monotonic", venue.value, msg)
             for msg in monotonic_violations([(c.terms, c.fair_yes) for c in members])
         )
     for event_id, members in by_event.items():
@@ -203,9 +204,13 @@ def _coherence(
         if k == n and _is_partition([c.terms.comparator for c in members]):
             msg = bracket_sum_violation([c.fair_yes for c in members])
             if msg is not None:
-                out.append(f"polymarket event {event_id}: {msg}")
+                out.append(CoherenceViolation("bracket_sum", event_id, msg))
         else:
-            out.append(f"polymarket event {event_id}: incomplete bracket ({k} of {n} mapped)")
+            out.append(
+                CoherenceViolation(
+                    "incomplete_bracket", event_id, f"incomplete bracket ({k} of {n} mapped)"
+                )
+            )
     return tuple(sorted(out))
 
 
