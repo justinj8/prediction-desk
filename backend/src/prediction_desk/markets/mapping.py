@@ -16,7 +16,7 @@ from prediction_desk.db.models import Release
 from prediction_desk.domain.enums import MEASURE_SERIES, Comparator, Measure, Venue
 from prediction_desk.markets.types import VenueMarket
 
-MAPPER_VERSION = "rules:v1"
+MAPPER_VERSION = "rules:v2"
 
 Reason = Literal[
     "unknown_series",
@@ -53,7 +53,7 @@ MEASURE_SPECS: Final[dict[Measure, tuple[str, int, str]]] = {
     Measure.CORE_CPI_MOM: ("pct", 1, "BLS"),
     Measure.CPI_YOY: ("pct", 1, "BLS"),
     Measure.CORE_CPI_YOY: ("pct", 1, "BLS"),
-    Measure.NFP_CHANGE: ("jobs", 0, "BLS"),
+    Measure.NFP_CHANGE: ("jobs", -3, "BLS"),
     Measure.FOMC_CHANGE_BP: ("bp", 0, "Federal Reserve"),
 }
 

@@ -95,7 +95,7 @@ def _release(series: Series, period: str, at: datetime) -> Release:
 
 
 def test_mapper_version() -> None:
-    assert MAPPER_VERSION == "rules:v1"
+    assert MAPPER_VERSION == "rules:v2"
 
 
 @pytest.mark.parametrize("floor", [-0.3, D("-0.3")])
@@ -134,7 +134,7 @@ def test_kalshi_payrolls_greater(floor: int | Decimal) -> None:
         "KXPAYROLLS", "KXPAYROLLS-26NOV", PAYROLLS_RULES, strike_type="greater", floor_strike=floor
     )
     assert map_market(m) == ContractTerms(
-        Measure.NFP_CHANGE, Comparator.GT, D(90000), None, "jobs", 0, "BLS"
+        Measure.NFP_CHANGE, Comparator.GT, D(90000), None, "jobs", -3, "BLS"
     )
 
 

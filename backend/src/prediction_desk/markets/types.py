@@ -1,6 +1,6 @@
 """Venue-neutral market and order book types."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -18,6 +18,9 @@ PARSE_ERRORS: tuple[type[Exception], ...] = (
     AttributeError,
     ArithmeticError,
 )
+
+# Upper bound on a single book level's size; a venue body beyond this is malformed.
+MAX_LEVEL_SIZE = Decimal("1e12")
 
 
 def optional_text(raw: Mapping[str, Any], key: str) -> str:
@@ -86,6 +89,8 @@ class OrderBook:
                 raise ValueError(f"price out of [0, 1]: {level.price}")
             if not (level.size.is_finite() and level.size >= 0):
                 raise ValueError(f"size must be finite and non-negative: {level.size}")
+            if level.size > MAX_LEVEL_SIZE:
+                raise ValueError(f"size exceeds {MAX_LEVEL_SIZE}: {level.size}")
         for a, b in zip(self.bids, self.bids[1:], strict=False):
             if not a.price > b.price:
                 raise ValueError("bids must be strictly descending")
@@ -109,6 +114,47 @@ class OrderBook:
             "bids": [[str(lv.price), str(lv.size)] for lv in self.bids],
             "asks": [[str(lv.price), str(lv.size)] for lv in self.asks],
         }
+
+    @classmethod
+    def from_json(
+        cls,
+        book: Mapping[str, Sequence[Sequence[str]]],
+        ts: datetime,
+        venue_ts: datetime | None = None,
+    ) -> "OrderBook":
+        """Inverse of ``to_json``.
+
+        Raises on a malformed stored book, so callers reading snapshot JSON must catch all of:
+        ``KeyError`` (no ``"bids"``/``"asks"`` key), ``TypeError`` (``book`` is not a mapping),
+        ``ValueError`` (a side or level that is not a well-formed ``[price, size]`` string pair,
+        a non-numeric level, a price outside [0, 1], a bad size, unordered levels, a non-UTC
+        timestamp) and ``decimal.InvalidOperation``. Unparseable numbers are normally converted
+        to ``ValueError``, but ``InvalidOperation`` is part of the contract so a caller's catch
+        does not depend on that detail.
+        """
+        return cls(
+            bids=_parse_levels(book["bids"]),
+            asks=_parse_levels(book["asks"]),
+            ts=ts,
+            venue_ts=venue_ts,
+        )
+
+
+def _parse_levels(raw: object) -> tuple[BookLevel, ...]:
+    if isinstance(raw, str) or not isinstance(raw, Sequence):
+        raise ValueError("book side must be a sequence of [price, size] levels")
+    levels: list[BookLevel] = []
+    for item in raw:
+        if isinstance(item, str) or not isinstance(item, Sequence) or len(item) != 2:
+            raise ValueError(f"book level must be a [price, size] pair: {item!r}")
+        price, size = item
+        if not isinstance(price, str) or not isinstance(size, str):
+            raise ValueError(f"book level values must be strings: {item!r}")
+        try:
+            levels.append(BookLevel(Decimal(price), Decimal(size)))
+        except ArithmeticError as exc:
+            raise ValueError(f"book level is not numeric: {item!r}") from exc
+    return tuple(levels)
 
 
 class VenueAdapter(Protocol):

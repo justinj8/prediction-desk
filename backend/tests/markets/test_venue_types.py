@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from prediction_desk.markets.types import BookLevel, OrderBook
+from prediction_desk.markets.types import MAX_LEVEL_SIZE, BookLevel, OrderBook
 
 TS = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 
@@ -76,3 +76,49 @@ def test_orderbook_rejects_negative_size_allows_zero() -> None:
     with pytest.raises(ValueError, match="size"):
         OrderBook(bids=(), asks=(_lvl("0.5", "-1"),), ts=TS)
     assert OrderBook(bids=(_lvl("0.5", "0"),), asks=(), ts=TS).best_bid == _lvl("0.5", "0")
+
+
+def test_size_cap() -> None:
+    assert Decimal("1e12") == MAX_LEVEL_SIZE
+    OrderBook(bids=(_lvl("0.40", "1e12"),), asks=(), ts=TS)
+    with pytest.raises(ValueError):
+        OrderBook(bids=(_lvl("0.40", "1000000000001"),), asks=(), ts=TS)
+    with pytest.raises(ValueError):
+        OrderBook(bids=(), asks=(_lvl("0.60", "1000000000001"),), ts=TS)
+
+
+def test_from_json_roundtrip() -> None:
+    b = OrderBook(
+        bids=(_lvl("0.40", "10"), _lvl("0.39", "5.5")),
+        asks=(_lvl("0.45", "7"),),
+        ts=TS,
+        venue_ts=TS,
+    )
+    assert OrderBook.from_json(b.to_json(), b.ts, b.venue_ts) == b
+    empty = OrderBook(bids=(), asks=(), ts=TS)
+    assert OrderBook.from_json(empty.to_json(), TS) == empty
+
+
+def test_from_json_rejects_unsorted() -> None:
+    with pytest.raises(ValueError):
+        OrderBook.from_json({"bids": [["0.40", "1"], ["0.45", "1"]], "asks": []}, TS)
+    with pytest.raises(ValueError):
+        OrderBook.from_json({"bids": [], "asks": [["0.60", "1"], ["0.55", "1"]]}, TS)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [["0.40"]],
+        [["0.40", "1", "2"]],
+        [[0.4, "1"]],
+        [["0.40", 1]],
+        [["abc", "1"]],
+        ["0.40"],
+        [None],
+        "0.40",
+    ],
+)
+def test_from_json_rejects_malformed_levels(bad: object) -> None:
+    with pytest.raises(ValueError):
+        OrderBook.from_json({"bids": bad, "asks": []}, TS)  # type: ignore[dict-item]

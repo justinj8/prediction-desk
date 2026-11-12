@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from sqlalchemy import select, text
@@ -71,6 +72,31 @@ async def test_mapped_contract_requires_terms(session: AsyncSession) -> None:
         await session.commit()
 
 
+@pytest.mark.parametrize("missing", ["unit", "resolution_precision", "resolution_source"])
+async def test_mapped_contract_requires_unit_precision_source(
+    session: AsyncSession, missing: str
+) -> None:
+    release_id = await _release(session)
+    fields: dict[str, Any] = {
+        "unit": "pct",
+        "resolution_precision": 1,
+        "resolution_source": "BLS",
+        missing: None,
+    }
+    session.add(
+        _contract(
+            mapping_status=MappingStatus.MAPPED,
+            release_id=release_id,
+            measure=Measure.CPI_MOM,
+            comparator=Comparator.GT,
+            strike_lo=Decimal("0.3"),
+            **fields,
+        )
+    )
+    with pytest.raises(IntegrityError, match="ck_event_contracts_mapped_complete"):
+        await session.commit()
+
+
 async def test_mapped_contract_with_terms_ok(session: AsyncSession) -> None:
     release_id = await _release(session)
     session.add(
@@ -80,6 +106,9 @@ async def test_mapped_contract_with_terms_ok(session: AsyncSession) -> None:
             measure=Measure.CPI_MOM,
             comparator=Comparator.GT,
             strike_lo=Decimal("0.3"),
+            unit="pct",
+            resolution_precision=1,
+            resolution_source="BLS",
         )
     )
     await session.commit()
