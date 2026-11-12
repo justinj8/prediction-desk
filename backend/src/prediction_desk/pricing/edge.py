@@ -29,7 +29,9 @@ class EdgeQuote:
 
 @dataclass(frozen=True)
 class Unavailable:
-    reason: Literal["no_snapshot", "stale_snapshot", "empty_side", "insufficient_depth"]
+    reason: Literal[
+        "no_snapshot", "stale_snapshot", "bad_snapshot", "empty_side", "insufficient_depth"
+    ]
 
 
 def _side_edge(
