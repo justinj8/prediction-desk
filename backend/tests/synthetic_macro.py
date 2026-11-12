@@ -18,6 +18,7 @@ deliberately left unpublished so a model can be asked to forecast it):
 """
 
 import random
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -396,4 +397,61 @@ async def seed_synthetic_nfp(
         adp_k={add_months(start, i): thousands(adp_p[at(i)]) for i in range(-3, months + 1)},
         jolts={add_months(start, i): jolts[at(i)] for i in range(-3, months + 1)},
         first_vintage=first_vintage,
+    )
+
+
+SERIES_DFF = "DFF"
+SERIES_DTB4WK = "DTB4WK"
+_RATES_DFF = D("5.33")
+_RATES_SPREAD = D("0.02")
+_NO_GAP = D(0)
+
+
+@dataclass(frozen=True)
+class SyntheticRatesTruth:
+    last_obs: date  # last observation date seeded
+    asof: datetime  # first instant at which last_obs is visible (00:00 ET next day)
+    asof_et_date: date  # the New York calendar date of asof
+    dff: Decimal  # latest DFF (percent)
+    bill: Decimal  # latest DTB4WK (percent)
+    spread: Decimal  # constant historical DTB4WK - DFF (before shocks / last_gap)
+
+
+async def seed_synthetic_rates(
+    session: AsyncSession,
+    *,
+    last_obs: date,
+    days: int = 300,
+    dff: Decimal = _RATES_DFF,
+    spread: Decimal = _RATES_SPREAD,
+    last_gap: Decimal = _NO_GAP,
+    shocks: Mapping[int, Decimal] | None = None,
+) -> SyntheticRatesTruth:
+    """Daily DFF / DTB4WK (percent) ending at `last_obs`, each known from 00:00 ET next day.
+
+    DFF is constant; DTB4WK = DFF + spread every day, so the historical spread is exactly
+    `spread`. `shocks` maps days-before-last_obs to an extra spread added that day (to make the
+    mean differ from the median); `last_gap` is added to the final bill only (the market's
+    implied move: last_gap * 100 bp when the meeting is today).
+    """
+    rows: list[DataObservation] = []
+    last_bill = dff
+    for back in range(days):
+        d = last_obs - timedelta(days=back)
+        vts = fred_vintage_ts(d)
+        extra = (shocks or {}).get(back, D(0)) + (last_gap if back == 0 else D(0))
+        bill = dff + spread + extra
+        if back == 0:
+            last_bill = bill
+        rows.append(_obs(SERIES_DFF, d, vts, dff))
+        rows.append(_obs(SERIES_DTB4WK, d, vts, bill))
+    session.add_all(rows)
+    await session.commit()
+    return SyntheticRatesTruth(
+        last_obs=last_obs,
+        asof=fred_vintage_ts(last_obs),
+        asof_et_date=last_obs + timedelta(days=1),
+        dff=dff,
+        bill=last_bill,
+        spread=spread,
     )
