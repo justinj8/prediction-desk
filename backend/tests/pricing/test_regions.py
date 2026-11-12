@@ -1,7 +1,7 @@
 from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from prediction_desk.domain.enums import Comparator
@@ -110,6 +110,10 @@ _ORACLE = {
     n=st.integers(-40, 40),
     m=st.integers(-320, 320),
 )
+# Pinned so a floor -> truncate-toward-zero mutant fails every run, not just on lucky seeds:
+# GT -0.975 on the 0.1 grid needs X >= -0.95, so X = -0.9 is in and truncation (-0.85) drops it.
+@example(precision=1, comparator=Comparator.GT, n=-39, m=-72)
+@example(precision=1, comparator=Comparator.GT, n=-39, m=-120)
 def test_interval_matches_rounding_oracle(
     precision: int, comparator: Comparator, n: int, m: int
 ) -> None:

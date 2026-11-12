@@ -408,6 +408,19 @@ async def test_asof_late_evening_et_uses_et_date(
     assert probs(out) == expected(m25="0.2", **{"0": "0.8"})
 
 
+async def test_staleness_age_uses_et_date_late_evening(
+    session: AsyncSession, seed_synthetic_rates: Seeder
+) -> None:
+    # 21:00 ET on 2026-03-10 is 2026-03-11 in UTC. The newest observation is dated 2026-03-03:
+    # exactly 7 days old by the ET date (allowed), but 8 by the UTC date (would fail closed).
+    await seed_synthetic_rates(session, last_obs=date(2026, 3, 3))
+    asof = datetime(2026, 3, 10, 21, 0, tzinfo=_NY).astimezone(UTC)
+    assert asof.date() == date(2026, 3, 11)
+    out = await FomcModelV1().predict(session, PROVIDER, release_on(date(2026, 3, 31)), asof)
+    assert out.model_version == "fomc-implied-v1"
+    assert out.diagnostics["fomc.days_to"] == "21"
+
+
 async def test_period_before_asof_date_raises(
     session: AsyncSession, seed_synthetic_rates: Seeder
 ) -> None:

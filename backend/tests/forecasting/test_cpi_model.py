@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from scipy.stats import t as student_t
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,7 +63,7 @@ async def predict(session: AsyncSession, truth: SyntheticCpiTruth) -> ModelOutpu
 def test_constants() -> None:
     assert D("1.0") == ALPHA
     assert MIN_TRAIN == 36
-    assert D("0.05") == SIGMA_FLOOR
+    assert D("0.10") == SIGMA_FLOOR  # R13 (was 0.05)
     assert D("5") == NU
     assert CpiModelV1.model_version == "cpi-ridge-v1"
     assert CpiModelV1.series == Series.CPI
@@ -117,6 +118,11 @@ async def test_mom_mean_tracks_known_relationship(
     gap = abs(truth.unconditional_headline_mom_mean - truth.true_headline_mom_mean)
     assert gap > D("0.15")
     assert abs(head.mu - truth.true_headline_mom_mean) < gap / 4
+    # Same for core (CORE_REF_SHOCK): an intercept-only core model would sit at the
+    # unconditional mean, a full `core_gap` away from the truth.
+    core_gap = abs(truth.unconditional_core_mom_mean - truth.true_core_mom_mean)
+    assert core_gap > D("0.15")
+    assert abs(core.mu - truth.true_core_mom_mean) < core_gap / 4
 
 
 async def test_sigma_floor_on_noiseless_data(
@@ -128,10 +134,14 @@ async def test_sigma_floor_on_noiseless_data(
     core = student(out.distributions[Measure.CORE_CPI_MOM])
     assert head.sigma == SIGMA_FLOOR
     assert core.sigma == SIGMA_FLOOR
-    # A strike ~8 floors below the mean must still price strictly inside (0, 1).
+    # A strike ~4 floors below the mean must still price strictly inside (0, 1). GT strike k on
+    # the 0.1 grid needs X >= k + 0.05, so the standardized cut is (k + 0.05 - mu) / 0.10; the
+    # expected value comes straight from scipy's t(5) survival function (R13 floor = 0.10).
     strike = (head.mu - D("0.4")).quantize(D("0.1"))
     terms = ContractTerms(Measure.CPI_MOM, Comparator.GT, strike, None, "pct", 1, "bls")
     p = fair_prob(terms, head)
+    z = float((strike + D("0.05") - head.mu) / D("0.10"))
+    assert float(p) == pytest.approx(float(student_t.sf(z, 5)), abs=5e-6)  # Prob has 5 dp
     assert D("0.99") < p < D(1)
 
 

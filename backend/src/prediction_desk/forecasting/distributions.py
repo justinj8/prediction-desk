@@ -153,7 +153,7 @@ class Categorical:
         return self._sum(pred)
 
     def params(self) -> dict[str, str]:
-        return {str(o): str(p) for o, p in sorted(self.outcomes, key=lambda op: str(op[0]))}
+        return {str(o): str(p) for o, p in sorted(self.outcomes, key=lambda op: op[0])}
 
 
 def affine[D: (Normal, StudentT)](dist: D, a: Decimal, b: Decimal) -> D:

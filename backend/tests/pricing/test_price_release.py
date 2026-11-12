@@ -166,7 +166,7 @@ async def test_prices_every_mapped_contract(
         strike="3.0",
     )
     d = await add_contract(
-        session, release, "D", measure=Measure.CORE_CPI_YOY, comparator=Comparator.GT, strike="2.2"
+        session, release, "D", measure=Measure.CORE_CPI_YOY, comparator=Comparator.GT, strike="3.1"
     )
     await add_contract(session, release, "U", status=MappingStatus.UNMAPPED)
     snaps = [await add_snapshot(session, x, at=asof) for x in (a, b, c, d)]

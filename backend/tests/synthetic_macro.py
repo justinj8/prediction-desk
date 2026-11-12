@@ -9,7 +9,9 @@ deliberately left unpublished so a model can be asked to forecast it):
 * Gasoline: monthly level g_i (random walk); weekly obs on days 1/8/15/22 all equal g_i, so the
   monthly mean is exactly g_i.
 * Headline SA MoM_i = a + b * gas_chg_i + c * realized_mom_{i-1} + noise_i
-* Core SA MoM_i = a_core + c_core * realized_core_mom_{i-1} + noise_i
+* Core SA MoM_i = a_core + c_core * realized_core_mom_{i-1} + noise_i, plus CORE_REF_SHOCK for
+  the last published month (i = months-1; not when noiseless), so the reference month's core
+  lag is extreme.
 * NSA = SA * (1 + F_k / 100) with F a calendar-month seasonal factor (sums to ~0), so the
   NSA-minus-SA MoM offset for calendar month k is ~ F_k - F_{k-1}.
 * PPI and shelter are independent random walks (carry no signal for the target).
@@ -39,6 +41,9 @@ HEADLINE_B = D("0.10")  # per 1% gasoline change (swing ~0.3 >> any test toleran
 HEADLINE_C = D("0.30")
 CORE_A = D("0.12")
 CORE_C = D("0.35")
+CORE_REF_SHOCK = D("0.60")  # added to the last published core MoM, so the reference month's lag
+# (and hence its conditional mean) sits far from the unconditional mean: a feature-blind core
+# model cannot track it
 NOISE_SD = 0.03
 SEASONAL_JITTER_SD = 0.05  # per-year drift of the seasonal factor, so NSA-SA offsets vary
 REVISION_PCT = D("2.0")
@@ -77,6 +82,7 @@ class SyntheticCpiTruth:
     noiseless: bool
     true_headline_mom_mean: Decimal  # noise-free E[headline MoM] for ref_month
     true_core_mom_mean: Decimal
+    unconditional_core_mom_mean: Decimal  # mean realized core MoM over the history
     unconditional_headline_mom_mean: Decimal  # mean realized headline MoM over the history
     first_print_levels: dict[str, dict[date, Decimal]]  # monthly series, first vintages
     gas_monthly: dict[date, Decimal]  # monthly mean level, ref_month included
@@ -164,6 +170,8 @@ async def seed_synthetic_cpi(
             HEADLINE_A + HEADLINE_B * gas_chg(i) + HEADLINE_C * lag_h + _dec(rng.gauss(0, noise_sd))
         )
         mom_c = CORE_A + CORE_C * lag_c + _dec(rng.gauss(0, noise_sd))
+        if i == months - 1 and not noiseless:  # noiseless data must stay exactly linear
+            mom_c += CORE_REF_SHOCK
         head.append((head[-1] * (1 + mom_h / _HUNDRED)).quantize(_Q3, rounding=ROUND_HALF_EVEN))
         core.append((core[-1] * (1 + mom_c / _HUNDRED)).quantize(_Q3, rounding=ROUND_HALF_EVEN))
 
@@ -171,6 +179,7 @@ async def seed_synthetic_cpi(
     true_head = HEADLINE_A + HEADLINE_B * gas_chg(months) + HEADLINE_C * _pct(head[-1], head[-2])
     uncond = sum((_pct(head[i], head[i - 1]) for i in range(1, months)), D(0)) / (months - 1)
     true_core = CORE_A + CORE_C * _pct(core[-1], core[-2])
+    uncond_core = sum((_pct(core[i], core[i - 1]) for i in range(1, months)), D(0)) / (months - 1)
 
     # Independent no-signal series.
     ppi: list[Decimal] = [D("200.000")]
@@ -237,6 +246,7 @@ async def seed_synthetic_cpi(
         noiseless=noiseless,
         true_headline_mom_mean=true_head,
         true_core_mom_mean=true_core,
+        unconditional_core_mom_mean=uncond_core,
         unconditional_headline_mom_mean=uncond,
         first_print_levels={
             sid: {month_of[i]: v for i, v in enumerate(values)}
