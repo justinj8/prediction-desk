@@ -1,8 +1,10 @@
 """Column types that enforce domain invariants at the database boundary."""
 
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
+import sqlalchemy as sa
 from sqlalchemy import DateTime
 from sqlalchemy.engine import Dialect
 from sqlalchemy.types import TypeDecorator
@@ -30,3 +32,8 @@ class UTCDateTime(TypeDecorator[datetime]):
             return None
         assert isinstance(value, datetime)
         return value.astimezone(UTC)
+
+
+def str_enum(cls: type[StrEnum], name: str) -> sa.Enum:
+    """Postgres enum column storing the enum *values* (not the member names)."""
+    return sa.Enum(cls, name=name, values_callable=lambda e: [m.value for m in e])

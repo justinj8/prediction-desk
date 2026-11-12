@@ -1,0 +1,50 @@
+interactions:
+- request:
+    body: ''
+    headers:
+      accept:
+      - '*/*'
+      accept-encoding:
+      - gzip, deflate
+      connection:
+      - keep-alive
+      host:
+      - api.elections.kalshi.com
+      user-agent:
+      - python-httpx/0.28.1
+    method: GET
+    uri: https://api.elections.kalshi.com/trade-api/v2/markets/KXCPI-26NOV-T0.0/orderbook
+  response:
+    body:
+      string: '{"orderbook_fp":{"no_dollars":[["0.0100","3001.00"],["0.0200","2000.00"],["0.0300","2176.67"],["0.0400","516.00"],["0.0500","1402.00"],["0.0600","333.33"],["0.0700","285.71"],["0.0800","250.00"],["0.0900","222.22"],["0.1000","1200.00"],["0.1100","235.82"],["0.1200","166.67"],["0.1300","153.85"],["0.1400","142.86"],["0.1500","133.33"],["0.1600","125.00"],["0.1700","199.44"],["0.1800","111.11"],["0.1900","429.26"],["0.2000","100.00"],["0.2100","523.24"],["0.2200","90.91"],["0.2400","8.00"],["0.3000","437.80"],["0.3100","67.59"],["0.4900","350.00"],["0.5000","5.75"],["0.5400","800.00"],["0.5500","4661.69"],["0.5600","6490.40"],["0.5700","8.00"]],"yes_dollars":[["0.0100","3001.00"],["0.0200","12061.00"],["0.0300","2176.67"],["0.0400","503.00"],["0.0500","1400.00"],["0.0600","858.33"],["0.0700","313.60"],["0.0800","1050.00"],["0.0900","222.22"],["0.1000","1200.00"],["0.1100","706.82"],["0.1200","166.67"],["0.1300","153.85"],["0.1400","514.00"],["0.1600","202.00"],["0.1700","103.06"],["0.2000","3.00"],["0.2600","10.00"],["0.2700","25.13"],["0.2800","15.50"],["0.2900","13.19"],["0.3000","25.00"],["0.3100","146.86"],["0.3200","3.33"],["0.3700","200.60"],["0.3800","9.00"],["0.3900","9.00"]]}}'
+    headers:
+      connection:
+      - keep-alive
+      content-length:
+      - '1202'
+      content-security-policy:
+      - default-src 'none';
+      content-type:
+      - application/json; charset=utf-8
+      date:
+      - Tue, 10 Nov 2026 23:07:14 GMT
+      strict-transport-security:
+      - max-age=31536000; includeSubDomains
+      transfer-encoding:
+      - chunked
+      vary:
+      - Accept-Encoding
+      via:
+      - 1.1 507582f8b58c2b5d8d8ec031d2481a9e.cloudfront.net (CloudFront)
+      x-amz-cf-id:
+      - Lp6Z9bApL2JgJDBkeQSpCo2N7sUuuEiGtcUTTRS_z4mzeeBbXzKFrQ==
+      x-amz-cf-pop:
+      - ORD56-P10
+      x-cache:
+      - Miss from cloudfront
+      x-content-type-options:
+      - nosniff
+    status:
+      code: 200
+      message: OK
+version: 1

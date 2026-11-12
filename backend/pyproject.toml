@@ -5,9 +5,11 @@ description = "Agentic paper-trading backend for prediction markets"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.20.1",
+    "httpx>=0.28.1",
     "psycopg[binary]>=3.3.8",
     "pydantic>=2.14.2",
     "pydantic-settings>=2.16.2",
+    "pyyaml>=6.0.3",
     "sqlalchemy[asyncio]>=2.1.8",
 ]
 
@@ -22,7 +24,9 @@ dev = [
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=7.1.0",
+    "pytest-recording>=0.14.1",
     "ruff>=0.17.3",
+    "types-pyyaml>=6.0.12.20261103",
 ]
 
 [tool.ruff]
@@ -53,7 +57,12 @@ mypy_path = "src"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "-ra"
+# --block-network (pytest-recording) fails any test that opens a Python socket; libpq (Postgres)
+# is unaffected. pytest-recording lifts the block only for @pytest.mark.vcr tests when the record
+# mode is not "none". To record a NEW keyless venue cassette, run just that test, e.g.:
+#   uv run pytest --record-mode=once tests/markets/test_kalshi.py::test_recorded_orderbook_best_first
+# Never record FRED or Alpha Vantage (ruling R8: hand-built fixtures; keys never in cassettes).
+addopts = "-ra --block-network"
 
 [tool.coverage.run]
 source = ["prediction_desk"]
