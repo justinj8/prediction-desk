@@ -14,9 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from prediction_desk.config import DEFAULT_TEST_ADMIN_URL, normalize_db_url
 from prediction_desk.db.engine import make_engine, make_sessionmaker
-from synthetic_macro import SyntheticCpiTruth, SyntheticNfpTruth
+from synthetic_macro import SyntheticCpiTruth, SyntheticNfpTruth, SyntheticRatesTruth
 from synthetic_macro import seed_synthetic_cpi as _seed_synthetic_cpi
 from synthetic_macro import seed_synthetic_nfp as _seed_synthetic_nfp
+from synthetic_macro import seed_synthetic_rates as _seed_synthetic_rates
 
 _ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
@@ -124,3 +125,9 @@ def seed_synthetic_cpi() -> Callable[..., Awaitable[SyntheticCpiTruth]]:
 def seed_synthetic_nfp() -> Callable[..., Awaitable[SyntheticNfpTruth]]:
     """Seeder for synthetic NFP point-in-time data (see tests/synthetic_macro.py)."""
     return _seed_synthetic_nfp
+
+
+@pytest.fixture
+def seed_synthetic_rates() -> Callable[..., Awaitable[SyntheticRatesTruth]]:
+    """Seeder for synthetic DFF / DTB4WK daily rates (see tests/synthetic_macro.py)."""
+    return _seed_synthetic_rates
