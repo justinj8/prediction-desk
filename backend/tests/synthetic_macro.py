@@ -426,13 +426,18 @@ async def seed_synthetic_rates(
     spread: Decimal = _RATES_SPREAD,
     last_gap: Decimal = _NO_GAP,
     shocks: Mapping[int, Decimal] | None = None,
+    dff_by_back: Mapping[int, Decimal] | None = None,
+    dff_lag_days: int = 0,
+    bill_lag_days: int = 0,
 ) -> SyntheticRatesTruth:
     """Daily DFF / DTB4WK (percent) ending at `last_obs`, each known from 00:00 ET next day.
 
     DFF is constant; DTB4WK = DFF + spread every day, so the historical spread is exactly
     `spread`. `shocks` maps days-before-last_obs to an extra spread added that day (to make the
     mean differ from the median); `last_gap` is added to the final bill only (the market's
-    implied move: last_gap * 100 bp when the meeting is today).
+    implied move: last_gap * 100 bp when the meeting is today). `dff_by_back` overrides DFF on
+    given days-before-last_obs (the bill follows DFF + spread). `dff_lag_days` / `bill_lag_days`
+    drop that series' newest N days, making it stale relative to the other.
     """
     rows: list[DataObservation] = []
     last_bill = dff
@@ -440,11 +445,14 @@ async def seed_synthetic_rates(
         d = last_obs - timedelta(days=back)
         vts = fred_vintage_ts(d)
         extra = (shocks or {}).get(back, D(0)) + (last_gap if back == 0 else D(0))
-        bill = dff + spread + extra
+        day_dff = (dff_by_back or {}).get(back, dff)
+        bill = day_dff + spread + extra
         if back == 0:
             last_bill = bill
-        rows.append(_obs(SERIES_DFF, d, vts, dff))
-        rows.append(_obs(SERIES_DTB4WK, d, vts, bill))
+        if back >= dff_lag_days:
+            rows.append(_obs(SERIES_DFF, d, vts, day_dff))
+        if back >= bill_lag_days:
+            rows.append(_obs(SERIES_DTB4WK, d, vts, bill))
     session.add_all(rows)
     await session.commit()
     return SyntheticRatesTruth(
