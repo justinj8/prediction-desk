@@ -176,6 +176,22 @@ async def test_already_published_release_raises(
         await NfpModelV1().predict(session, PROVIDER, release_for(last), asof)
 
 
+async def test_published_guard_runs_before_the_sufficiency_check(
+    session: AsyncSession, seed_synthetic_nfp: Seeder
+) -> None:
+    """R7 ordering: with too little history AND a published release, the caller must hear
+    "already published" (a caller bug), not InsufficientData (a data gap that gets priced as
+    unpriceable)."""
+    truth = await seed_synthetic_nfp(session, months=30)  # 29 samples < MIN_TRAIN
+    last = add_months(truth.ref_month, -1)
+    asof = truth.first_vintage[last]
+    with pytest.raises(ValueError, match="release already published as of asof"):
+        await NfpModelV1().predict(session, PROVIDER, release_for(last), asof)
+    # The same thin history before publication is a data gap, not a caller error.
+    with pytest.raises(InsufficientData):
+        await predict(session, truth)
+
+
 async def test_prediction_ignores_data_after_asof(
     session: AsyncSession, seed_synthetic_nfp: Seeder
 ) -> None:

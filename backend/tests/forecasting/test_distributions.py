@@ -130,7 +130,8 @@ def test_validation_of_params() -> None:
 def test_params_json_safe() -> None:
     for dist in (Normal(D("0.1"), D(1)), StudentT(D(0), D(1), D(5)), _cat()):
         p = dist.params()
-        assert list(p) == sorted(p)
+        if not isinstance(dist, Categorical):
+            assert list(p) == sorted(p)
         assert all(isinstance(v, str) for v in p.values())
         assert all(isinstance(k, str) for k in p)
         for v in p.values():
@@ -139,3 +140,17 @@ def test_params_json_safe() -> None:
     assert StudentT(D(0), D(1), D(5)).family == "student_t"
     assert _cat().family == "categorical"
     assert _cat().params() == {"-25": "0.2", "0": "0.5", "25": "0.3"}
+
+
+def test_categorical_params_ordered_numerically_not_lexicographically() -> None:
+    # str-sorted order would be -25, -50, 0, 100, 25 (and "100" before "25").
+    cat = Categorical(
+        (
+            (-50, D("0.1")),
+            (-25, D("0.2")),
+            (0, D("0.4")),
+            (25, D("0.2")),
+            (100, D("0.1")),
+        )
+    )
+    assert list(cat.params()) == ["-50", "-25", "0", "25", "100"]

@@ -38,7 +38,7 @@ ALPHA = Decimal("1.0")
 MIN_TRAIN = 36
 OOS_MIN_TRAIN = 24  # ruling R5: within MIN_TRAIN, so >= 12 out-of-sample residuals
 SIGMA_WINDOW = 24
-SIGMA_FLOOR = Decimal("0.05")  # pct
+SIGMA_FLOOR = Decimal("0.10")  # pct; R13: not sharper than consensus (~0.1pp MoM surprise std)
 NU = Decimal("5")
 SEASONAL_YEARS = 5
 SEASONAL_MIN_YEARS = 3
