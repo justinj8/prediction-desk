@@ -229,6 +229,20 @@ async def test_fomc_from_dfedtaru_step(session: AsyncSession) -> None:
     assert reported_value(Measure.FOMC_CHANGE_BP, got[0]) == D("-25")
 
 
+async def test_later_dfedtaru_vintage_does_not_change_fomc_outcome(session: AsyncSession) -> None:
+    # R12: levels are read as of the first vintage of d+1, not as of asof.
+    d = date(2026, 10, 28)
+    await _seed_dfedtaru(session, d, "4.50", "4.25")
+    later = datetime(2026, 11, 5, tzinfo=UTC)  # well after d+1's first vintage (Oct 30)
+    session.add(_obs("DFEDTARU", d + timedelta(days=1), later, D("4.00")))
+    await session.commit()
+    release = await make_release(session, Series.FOMC, d.isoformat())
+
+    got = await official_raw_value(session, PROVIDER, release, Measure.FOMC_CHANGE_BP, FAR)
+
+    assert got == (D("-25"), datetime(2026, 10, 30, tzinfo=UTC))
+
+
 async def test_missing_data_returns_none_and_record_skips(
     session: AsyncSession,
     sessions: async_sessionmaker[AsyncSession],
