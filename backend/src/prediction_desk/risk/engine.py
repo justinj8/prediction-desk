@@ -330,13 +330,21 @@ class RiskEngine:
             book = await lock_book(s, book_id)
             if await _decided(s, book_id, run_key, slot):  # a concurrent run got here first
                 return await _stored(s, book, run_key, slot)
+            # The officer may have taken arbitrarily long: re-run the clock gates (2, 3) on
+            # the time the decision is written, with the Phase A inequalities.
+            now = require_utc(self._clock.now())
+            release = await s.get_one(Release, pricing.release_id)
+            cutoff = release.scheduled_at - timedelta(minutes=limits.cutoff_minutes)
             if bugs:
                 _reject(drafts, "pricing_sanity_violation")
             elif book.kill_switch_on:
                 _reject(drafts, "kill_switch_on")
+            elif now - require_utc(pricing.asof) > timedelta(seconds=limits.max_quote_age_s):
+                _reject(drafts, "stale_pricing")
+            elif now >= cutoff:
+                _reject(drafts, "past_cutoff")
             else:
                 await self._recheck(s, book, pricing.release_id, drafts, limits)
-            now = require_utc(self._clock.now())
             rows = [self._row(d, book_id, run_key, slot, pricing, limits, now) for d in drafts]
             s.add_all(rows)
             await s.flush()
@@ -400,11 +408,11 @@ class RiskEngine:
                 await s.scalars(select(MarketSnapshot).where(MarketSnapshot.id.in_(snap_ids)))
             )
         }
-        held = await _held_sides(s, book_id, ids)
-        hold = _Holdings(await exposure(s, book_id), release.id)
-        if bugs:
+        if bugs:  # before exposure(), so a U2 trip cannot be blocked by its RuntimeError
             _reject(drafts, "pricing_sanity_violation")
             return limits, book.mode, drafts
+        held = await _held_sides(s, book_id, ids)
+        hold = _Holdings(await exposure(s, book_id), release.id)
 
         now = require_utc(self._clock.now())
         asof = require_utc(pricing.asof)

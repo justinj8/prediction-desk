@@ -722,6 +722,72 @@ async def test_write_phase_rechecks_opposite_position(
     assert _why(decision) == "opposite_position"
 
 
+@pytest.mark.parametrize(
+    ("release_at", "wait", "reason"),
+    [
+        # Past max_quote_age_s (60 s) by the time the officer answers; the release is far off.
+        (RELEASE_AT, timedelta(seconds=61), "stale_pricing"),
+        # Still within quote age (30 s) but the 5-minute cutoff has arrived.
+        (ASOF + timedelta(minutes=5, seconds=30), timedelta(seconds=30), "past_cutoff"),
+        (RELEASE_AT + timedelta(days=1), timedelta(days=1), "stale_pricing"),
+    ],
+)
+async def test_slow_officer_rejects_on_clock_gates_at_write(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    release_at: datetime,
+    wait: timedelta,
+    reason: str,
+) -> None:
+    release = await make_release(session, scheduled_at=release_at)
+    a = await _worked_contract(session, release, strike="0.3")
+    b = await _worked_contract(session, release, strike="0.4")
+    book = await make_book(session)
+    clock = SimClock(ASOF)
+
+    async def think() -> None:
+        clock.advance(wait)
+
+    result = await _evaluate(
+        sessions,
+        book,
+        _release_pricing(release, [a, b]),
+        officer=PassOfficer(before=think),
+        clock=clock,
+    )
+
+    assert result.approved == ()
+    decisions = await _decisions(sessions)
+    assert [_why(d) for d in decisions] == [reason] * 2
+    assert all(d.decided_at == ASOF + wait for d in decisions)
+
+
+@pytest.mark.parametrize(
+    ("release_at", "wait"),
+    [
+        (RELEASE_AT, timedelta(seconds=60)),  # exactly max_quote_age_s old
+        (ASOF + timedelta(minutes=5, seconds=30), timedelta(seconds=29)),  # 1 s before cutoff
+    ],
+)
+async def test_slow_officer_within_clock_gates_still_approves(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    release_at: datetime,
+    wait: timedelta,
+) -> None:
+    sc = await _scenario(session, release_at=release_at)
+
+    async def think() -> None:
+        sc.clock.advance(wait)
+
+    result = await _evaluate(
+        sessions, sc.book, sc.pricing, officer=PassOfficer(before=think), clock=sc.clock
+    )
+
+    [order] = result.approved
+    assert order.decided_at == ASOF + wait
+
+
 async def test_kill_switch_tripped_during_review_rejects_all(
     session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -792,6 +858,34 @@ async def test_exposure_without_known_release_fails_closed(
     with pytest.raises(RuntimeError, match="no release known"):
         await _evaluate(sessions, sc.book, sc.pricing, officer=PassOfficer())
     assert await _count(sessions, RiskDecision) == 0
+
+
+async def test_bug_violation_trips_even_when_exposure_would_fail(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    # A held position with no known release makes exposure() raise; U2 must still trip.
+    sc = await _scenario(session)
+    other = await make_release(session, period="2026-11")
+    stray = await _contract(session, other, strike="0.9")
+    await _position(session, sc.book, stray.id)
+    stray.release_id = None
+    stray.mapping_status = MappingStatus.UNMAPPED
+    stray.measure = stray.comparator = stray.strike_lo = None
+    stray.unit = stray.resolution_precision = stray.resolution_source = None
+    await session.commit()
+    bug = CoherenceViolation("monotonic", "kalshi", "ladder not monotonic")
+    pricing = dataclasses.replace(sc.pricing, coherence=(bug,))
+
+    result = await _evaluate(sessions, sc.book, pricing, officer=PassOfficer())
+
+    assert result.approved == ()
+    assert result.killed is True
+    [decision] = await _decisions(sessions)
+    assert _why(decision) == "pricing_sanity_violation"
+    async with sessions() as s:
+        row = await s.get_one(BookState, sc.book.id)
+    assert row.kill_switch_on is True
+    assert row.kill_reason == "pricing_sanity: ladder not monotonic"
 
 
 # --- idempotency (D8, Review Focus 3) ---------------------------------------------------------
