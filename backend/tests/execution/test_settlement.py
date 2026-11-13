@@ -222,9 +222,39 @@ async def test_unmapped_contract_stays_pending(
 ) -> None:
     release, contract, book = await _setup(session)
     pos = await _position(session, book, contract)
+    session.add(
+        RiskDecision(
+            book_id=book.id,
+            run_key="run-1",
+            slot=Slot.T24H,
+            release_id=release.id,
+            contract_id=contract.id,
+            side=PositionSide.YES,
+            inputs_hash="ab" * 32,
+            engine_version="risk:v1",
+            fair_yes=D("0.6"),
+            limit_price=D("0.50"),
+            stake_final_cents=100,
+            qty=100,
+            verdict=Verdict.APPROVED,
+            reasons=[],
+            limits_version=1,
+            limits_snapshot={},
+            decided_at=BASE_TS,
+        )
+    )
     await _outcome(session, release, Measure.CPI_MOM, "0.4")
+    # What discovery's _set_mapping does to a contract it can no longer map.
     contract.mapping_status = MappingStatus.UNMAPPED
     contract.unmapped_reason = "remapped"
+    contract.release_id = None
+    contract.measure = None
+    contract.comparator = None
+    contract.strike_lo = None
+    contract.strike_hi = None
+    contract.unit = None
+    contract.resolution_precision = None
+    contract.resolution_source = None
     await session.commit()
 
     result = await _settle(sessions, book, release)
@@ -234,6 +264,15 @@ async def test_unmapped_contract_stays_pending(
     assert isinstance(pos_row, Position)
     assert pos_row.settled is False
     assert await session.scalar(select(func.count()).select_from(Settlement)) == 0
+    book_row = await _fresh(session, BookState, book.id)
+    assert isinstance(book_row, BookState)
+    assert book_row.cash_cents == 900_000
+    event = (
+        await session.execute(
+            select(AuditEvent).where(AuditEvent.action == "settlement.pending_unmapped")
+        )
+    ).scalar_one()
+    assert (event.entity, event.entity_id) == ("position", str(pos.id))
 
 
 async def test_mismatch_flagged_but_payout_follows_our_outcome(
@@ -299,9 +338,13 @@ async def test_settle_twice_is_idempotent(
 async def test_big_realized_loss_trips_drawdown_via_mark(
     session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
-    # Equity 1_000_000 = 700_000 cash + 300_000 cost basis; losing it all is a 30% drawdown.
+    # Equity 1_000_000 = 700_000 cash + 300_000 cost basis. Losing it all is a 30% drawdown from
+    # the 1_000_000 peak; the day start is 700_000, so the daily-loss rule cannot fire.
     release, contract, book = await _setup(session, cash=700_000)
     book.equity_cents = 1_000_000
+    book.peak_equity_cents = 1_000_000
+    book.day_start_equity_cents = 700_000
+    book.day_start_date = NOW.date()  # the mark does not roll the day
     await session.commit()
     await _position(session, book, contract, qty=500, cost=300_000)
     await _outcome(session, release, Measure.CPI_MOM, "0.2")
@@ -312,6 +355,10 @@ async def test_big_realized_loss_trips_drawdown_via_mark(
     assert isinstance(book_row, BookState)
     assert book_row.equity_cents == 700_000
     assert book_row.kill_switch_on is True
+    tripped = (
+        await session.execute(select(AuditEvent).where(AuditEvent.action == "kill_switch.tripped"))
+    ).scalar_one()
+    assert str(tripped.payload["reason"]).startswith("drawdown")
 
 
 async def test_equity_after_settlement_equals_cash_when_flat(
