@@ -61,8 +61,8 @@ async def reset_kill_switch(
     actor: str,
 ) -> None:
     """Turn the switch off. Admin actors only; nothing calls this automatically."""
-    if not actor.startswith(ADMIN_PREFIX):
-        raise PermissionError(f"only an {ADMIN_PREFIX}* actor may reset the kill switch")
+    if not actor.startswith(ADMIN_PREFIX) or not actor.removeprefix(ADMIN_PREFIX).strip():
+        raise PermissionError(f"only an {ADMIN_PREFIX}<login> actor may reset the kill switch")
     if not reason.strip():
         raise ValueError("kill switch reset needs a reason")
     book = await _locked(session, book_id)

@@ -65,8 +65,9 @@ async def test_reset_requires_admin_and_reason(
     async with unit_of_work(sessions) as s:
         await trip_kill_switch(s, audit, clock, book.id, reason="x", actor="system:risk")
     async with unit_of_work(sessions) as s:
-        with pytest.raises(PermissionError):
-            await reset_kill_switch(s, audit, clock, book.id, reason="ok", actor="system:risk")
+        for actor in ("system:risk", "admin:", "admin:  "):
+            with pytest.raises(PermissionError):
+                await reset_kill_switch(s, audit, clock, book.id, reason="ok", actor=actor)
         with pytest.raises(ValueError, match="reason"):
             await reset_kill_switch(s, audit, clock, book.id, reason="", actor="admin:justin")
     assert (await _fresh(session, book.id)).kill_switch_on is True
