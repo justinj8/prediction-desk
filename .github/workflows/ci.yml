@@ -48,6 +48,8 @@ jobs:
         run: uv run coverage report --include='*/prediction_desk/pricing/*' --fail-under=100
       - name: Risk coverage gate (100%)
         run: uv run coverage report --include='*/prediction_desk/risk/*' --fail-under=100
+      - name: Execution coverage gate (100%)
+        run: uv run coverage report --include='*/prediction_desk/execution/*' --fail-under=100
 
   secrets:
     # Scans the ENTIRE git history on every run with the pinned gitleaks CLI.
