@@ -412,6 +412,24 @@ async def test_unchanged_equity_writes_no_audit(
     assert await _audit_count(session, "book.marked") == 0
 
 
+async def test_day_roll_with_unchanged_equity_audits_book_marked(
+    sessions: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    book = await make_book(session, day_start_date=date(2026, 11, 10))
+    book.day_start_equity_cents = 990_000  # yesterday's start; today's is the last mark
+    await session.commit()
+
+    await _mark(sessions, book.id, BASE_TS)  # 07:00 ET on Nov 11: a new ET day, flat book
+
+    event = (
+        await session.execute(select(AuditEvent).where(AuditEvent.action == "book.marked"))
+    ).scalar_one()
+    assert event.payload["previous_equity_cents"] == event.payload["equity_cents"] == 1_000_000
+    assert event.payload["day_start_equity_cents"] == 1_000_000
+    assert event.payload["day_start_date"] == "2026-11-11"
+    assert event.payload["peak_equity_cents"] == 1_000_000
+
+
 async def test_changed_equity_audits_book_marked(
     sessions: async_sessionmaker[AsyncSession], session: AsyncSession
 ) -> None:

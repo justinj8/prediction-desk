@@ -188,6 +188,12 @@ async def mark_book(
         value += int((position.qty * side_mark * _CENTS).quantize(_ONE, rounding=ROUND_HALF_EVEN))
     equity = book.cash_cents + value
     previous = book.equity_cents
+    before = (
+        book.equity_cents,
+        book.day_start_equity_cents,
+        book.day_start_date,
+        book.peak_equity_cents,
+    )
 
     if et_date(asof) > book.day_start_date:
         book.day_start_equity_cents = previous
@@ -197,7 +203,13 @@ async def mark_book(
     book.updated_at = now
     await session.flush()
 
-    if equity != previous:
+    after = (
+        book.equity_cents,
+        book.day_start_equity_cents,
+        book.day_start_date,
+        book.peak_equity_cents,
+    )
+    if after != before:  # equity, a day roll or a new peak
         await audit.append(
             session,
             actor=SYSTEM_ACTOR,
@@ -209,6 +221,9 @@ async def mark_book(
                 "previous_equity_cents": previous,
                 "equity_cents": equity,
                 "cash_cents": book.cash_cents,
+                "day_start_equity_cents": book.day_start_equity_cents,
+                "day_start_date": book.day_start_date,
+                "peak_equity_cents": book.peak_equity_cents,
             },
         )
 
