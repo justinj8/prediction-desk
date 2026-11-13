@@ -9,7 +9,14 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from desk_fixtures import BASE_TS, add_contract, add_snapshot, make_book, make_release
+from desk_fixtures import (
+    BASE_TS,
+    RELEASE_AT,
+    add_contract,
+    add_snapshot,
+    make_book,
+    make_release,
+)
 from prediction_desk.audit.log import AuditLog
 from prediction_desk.clock import SimClock
 from prediction_desk.db.models import (
@@ -20,6 +27,7 @@ from prediction_desk.db.models import (
     MarketSnapshot,
     Order,
     Position,
+    Release,
     RiskDecision,
 )
 from prediction_desk.domain.enums import (
@@ -502,3 +510,99 @@ async def test_order_without_decision_impossible(session: AsyncSession) -> None:
                 created_at=NOW,
             )
         )
+
+
+# --- late or orphaned approvals (ruling R14) --------------------------------------------------
+
+CUTOFF = RELEASE_AT - timedelta(minutes=5)  # default cutoff_minutes
+
+
+@pytest.mark.parametrize("kill", [False, True])
+async def test_submit_at_or_after_cutoff_is_refused_past_cutoff(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession], kill: bool
+) -> None:
+    env = await _env(session)
+    await add_snapshot(session, env.contract, CUTOFF - timedelta(seconds=10), [], WORKED_ASKS)
+    approved = await _approved(session, env, qty=10, limit="0.53")
+    if kill:  # past_cutoff is checked before the kill switch
+        async with sessions() as s, s.begin():
+            await trip_kill_switch(
+                s, env.audit, env.clock, env.book.id, reason="t", actor="admin:t"
+            )
+    env.clock.set(CUTOFF)
+
+    result = await env.broker.submit(sessions, approved)
+    replay = await env.broker.submit(sessions, approved)
+
+    assert result.status is OrderStatus.REFUSED
+    assert (result.filled_qty, result.cost_cents, result.fees_cents) == (0, 0, 0)
+    assert replay == result
+    order = (await session.execute(select(Order))).scalar_one()
+    assert (order.status_reason, order.filled_qty) == ("past_cutoff", 0)
+    assert await _count(session, Fill) == 0
+    assert await _count(session, Position) == 0
+    assert (await _book(session, env.book.id)).cash_cents == 1_000_000
+    submitted = (
+        (await session.execute(select(AuditEvent).where(AuditEvent.action == "order.submitted")))
+        .scalars()
+        .all()
+    )
+    assert [e.payload["status_reason"] for e in submitted] == ["past_cutoff"]
+    assert (await exposure(session, env.book.id)).portfolio == 0  # the decision is consumed
+
+
+async def test_submit_just_before_cutoff_fills(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    env = await _env(session)
+    await add_snapshot(session, env.contract, CUTOFF - timedelta(seconds=10), [], WORKED_ASKS)
+    approved = await _approved(session, env, qty=10, limit="0.53")
+    env.clock.set(CUTOFF - timedelta(microseconds=1))
+
+    result = await env.broker.submit(sessions, approved)
+
+    assert result.status is OrderStatus.FILLED
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"qty": 11},
+        {"limit_price": D("0.54")},
+        {"side": PositionSide.NO},
+        {"verdict": Verdict.REJECTED},
+        {"book_id": "other"},
+        {"contract_id": "other"},
+        {"run_key": "run-2"},  # the client_order_id no longer derives from the decision
+    ],
+    ids=["qty", "limit", "side", "verdict", "book", "contract", "client_order_id"],
+)
+async def test_decision_mismatch_raises_and_writes_nothing(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession], change: dict[str, object]
+) -> None:
+    env = await _env(session)
+    approved = await _approved(session, env, qty=10, limit="0.53")
+    decision = await session.get_one(RiskDecision, approved.risk_decision_id)
+    for name, value in change.items():
+        if value == "other" and name == "book_id":
+            value = (await make_book(session, batch=2)).id
+        elif value == "other":
+            value = (
+                await add_contract(
+                    session,
+                    await session.get_one(Release, env.contract.release_id),
+                    venue=Venue.KALSHI,
+                    measure=Measure.CPI_MOM,
+                    comparator=Comparator.GT,
+                    strike_lo=D("0.4"),
+                )
+            ).id
+        setattr(decision, name, value)
+    await session.commit()
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        await env.broker.submit(sessions, approved)
+
+    assert await _count(session, Order) == 0
+    assert await _count(session, AuditEvent) == 0
+    assert (await _book(session, env.book.id)).cash_cents == 1_000_000

@@ -15,6 +15,7 @@ from prediction_desk.db.models import (
     BookState,
     EventContract,
     MeasureOutcome,
+    Order,
     Position,
     Release,
     RiskDecision,
@@ -25,6 +26,7 @@ from prediction_desk.domain.enums import (
     Comparator,
     MappingStatus,
     Measure,
+    OrderStatus,
     PositionSide,
     Slot,
     Venue,
@@ -33,6 +35,7 @@ from prediction_desk.domain.enums import (
 from prediction_desk.execution.broker import PaperBroker
 from prediction_desk.execution.settlement import SettleResult, settle_release
 from prediction_desk.pricing.fees import FeeSchedule
+from prediction_desk.risk.book import exposure
 from prediction_desk.risk.engine import _approve
 
 D = Decimal
@@ -131,7 +134,7 @@ async def test_yes_winner_pays_100_per_contract_and_books_pnl(
 
     result = await _settle(sessions, book, release)
 
-    assert result == SettleResult(settled=(contract.id,), pending=(), mismatches=())
+    assert result == SettleResult(settled=(contract.id,), pending=(), mismatches=(), expired=())
     pos_row = await _fresh(session, Position, pos.id)
     assert isinstance(pos_row, Position)
     assert (pos_row.settled, pos_row.realized_pnl_cents, pos_row.mark_price) == (True, 4_700, D(1))
@@ -205,7 +208,7 @@ async def test_missing_measure_outcome_leaves_position_pending(
 
     result = await _settle(sessions, book, release)
 
-    assert result == SettleResult(settled=(mom.id,), pending=(core.id,), mismatches=())
+    assert result == SettleResult(settled=(mom.id,), pending=(core.id,), mismatches=(), expired=())
     core_row = await _fresh(session, Position, core_pos.id)
     assert isinstance(core_row, Position)
     assert core_row.settled is False and core_row.realized_pnl_cents == 0
@@ -214,7 +217,7 @@ async def test_missing_measure_outcome_leaves_position_pending(
     # The missing outcome arrives later; the second pass settles only the core position.
     await _outcome(session, release, Measure.CORE_CPI_MOM, "0.1")
     again = await _settle(sessions, book, release)
-    assert again == SettleResult(settled=(core.id,), pending=(), mismatches=())
+    assert again == SettleResult(settled=(core.id,), pending=(), mismatches=(), expired=())
 
 
 async def test_unmapped_contract_stays_pending(
@@ -259,7 +262,10 @@ async def test_unmapped_contract_stays_pending(
 
     result = await _settle(sessions, book, release)
 
-    assert result == SettleResult(settled=(), pending=(contract.id,), mismatches=())
+    # Its approved decision never got an order, so settlement also expires it (R14).
+    assert result == SettleResult(
+        settled=(), pending=(contract.id,), mismatches=(), expired=(contract.id,)
+    )
     pos_row = await _fresh(session, Position, pos.id)
     assert isinstance(pos_row, Position)
     assert pos_row.settled is False
@@ -284,7 +290,9 @@ async def test_mismatch_flagged_but_payout_follows_our_outcome(
 
     result = await _settle(sessions, book, release, {contract.id: False})
 
-    assert result == SettleResult(settled=(contract.id,), pending=(), mismatches=(contract.id,))
+    assert result == SettleResult(
+        settled=(contract.id,), pending=(), mismatches=(contract.id,), expired=()
+    )
     settlement = (await session.execute(select(Settlement))).scalar_one()
     assert (settlement.yes_won, settlement.venue_yes_won, settlement.mismatch) == (
         True,
@@ -328,7 +336,7 @@ async def test_settle_twice_is_idempotent(
     await _settle(sessions, book, release)
     again = await _settle(sessions, book, release)
 
-    assert again == SettleResult(settled=(), pending=(), mismatches=())
+    assert again == SettleResult(settled=(), pending=(), mismatches=(), expired=())
     assert await session.scalar(select(func.count()).select_from(Settlement)) == 1
     book_row = await _fresh(session, BookState, book.id)
     assert isinstance(book_row, BookState)
@@ -424,3 +432,78 @@ async def test_position_opened_through_the_broker_settles(
     assert isinstance(book_row, BookState)
     assert book_row.cash_cents == 1_000_000 - 5_000 + 10_000
     assert book_row.equity_cents == book_row.cash_cents
+
+
+def _decision(
+    book: BookState, release: Release, contract: EventContract, *, run_key: str = "run-1"
+) -> RiskDecision:
+    return RiskDecision(
+        book_id=book.id,
+        run_key=run_key,
+        slot=Slot.T24H,
+        release_id=release.id,
+        contract_id=contract.id,
+        side=PositionSide.YES,
+        inputs_hash="ab" * 32,
+        engine_version="risk:v2",
+        fair_yes=D("0.6"),
+        limit_price=D("0.50"),
+        stake_final_cents=1_250,
+        qty=25,
+        verdict=Verdict.APPROVED,
+        reasons=[],
+        limits_version=1,
+        limits_snapshot={},
+        decided_at=BASE_TS,
+    )
+
+
+async def test_unsubmitted_approval_expires_at_settlement(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    release, contract, book = await _setup(session)
+    later = await make_release(session, period="2026-11")
+    other = await add_contract(
+        session,
+        later,
+        venue=Venue.KALSHI,
+        measure=Measure.CPI_MOM,
+        comparator=Comparator.GT,
+        strike_lo=D("0.3"),
+        venue_event_id="ev-2",
+    )
+    orphan = _decision(book, release, contract)
+    kept = _decision(book, later, other)
+    session.add_all([orphan, kept])
+    await session.commit()
+    assert (await exposure(session, book.id)).portfolio == 2_500
+
+    result = await _settle(sessions, book, release)
+    again = await _settle(sessions, book, release)
+
+    assert result == SettleResult(settled=(), pending=(), mismatches=(), expired=(contract.id,))
+    assert again == SettleResult(settled=(), pending=(), mismatches=(), expired=())
+    order = (await session.execute(select(Order))).scalar_one()
+    assert order.client_order_id == _approve(orphan).client_order_id
+    assert (order.risk_decision_id, order.status, order.status_reason) == (
+        orphan.id,
+        OrderStatus.REFUSED,
+        "expired",
+    )
+    assert (order.qty, order.filled_qty, order.created_at) == (25, 0, NOW)
+    exp = await exposure(session, book.id)
+    assert (exp.portfolio, exp.event) == (1_250, {later.id: 1_250})  # only the later release
+    event = (
+        await session.execute(select(AuditEvent).where(AuditEvent.action == "order.expired"))
+    ).scalar_one()
+    assert (event.entity, event.entity_id, event.actor) == (
+        "order",
+        str(order.id),
+        "system:settlement",
+    )
+    assert event.payload["risk_decision_id"] == orphan.id
+    assert event.payload["status_reason"] == "expired"
+    # A late submit of the expired approval finds the refusal (D8), so nothing ever fills.
+    clock = SimClock(BASE_TS)
+    late = await PaperBroker(clock, AuditLog(clock)).submit(sessions, _approve(orphan))
+    assert (late.order_id, late.status) == (order.id, OrderStatus.REFUSED)

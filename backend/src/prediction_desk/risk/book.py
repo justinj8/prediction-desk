@@ -7,7 +7,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import exists, select
+from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from prediction_desk.audit.log import AuditLog
@@ -93,12 +93,31 @@ async def lock_book(session: AsyncSession, book_id: int) -> BookState:
     return book
 
 
+def held_release_id(book_id: int) -> ColumnElement[int | None]:
+    """The release a held position belongs to, for a query over ``Position`` joined to its
+    ``EventContract``: the contract's own release, else (discovery unmapped the contract, so
+    ``release_id`` is NULL) the release of this book's first approved decision on it. NULL when
+    neither is known. Shared by ``exposure`` and settlement so both attribute alike."""
+    decided = (
+        select(RiskDecision.release_id)
+        .where(
+            RiskDecision.book_id == book_id,
+            RiskDecision.contract_id == Position.contract_id,
+            RiskDecision.verdict == Verdict.APPROVED,
+        )
+        .order_by(RiskDecision.id)
+        .limit(1)
+        .scalar_subquery()
+    )
+    return func.coalesce(EventContract.release_id, decided)
+
+
 async def exposure(session: AsyncSession, book_id: int) -> Exposure:
     """Capital at risk in cents: open position cost plus approved-but-unordered stakes (D1)."""
     by_contract: dict[int, int] = defaultdict(int)
     by_event: dict[int, int] = defaultdict(int)
     held = await session.execute(
-        select(Position.contract_id, EventContract.release_id, Position.cost_cents)
+        select(Position.contract_id, held_release_id(book_id), Position.cost_cents)
         .join(EventContract, EventContract.id == Position.contract_id)
         .where(Position.book_id == book_id, Position.settled.is_(False))
     )
@@ -115,23 +134,8 @@ async def exposure(session: AsyncSession, book_id: int) -> Exposure:
     portfolio = 0
     for contract_id, release_id, maybe_cents in [*held.all(), *pending.all()]:
         cents = maybe_cents or 0  # pending rows are filtered non-null in SQL
-        if release_id is None:
-            # The contract was remapped away from its release; fall back to the release the
-            # book's approved decision named, and fail closed if there is none.
-            release_id = (
-                await session.execute(
-                    select(RiskDecision.release_id)
-                    .where(
-                        RiskDecision.book_id == book_id,
-                        RiskDecision.contract_id == contract_id,
-                        RiskDecision.verdict == Verdict.APPROVED,
-                    )
-                    .order_by(RiskDecision.id)
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if release_id is None:
-                raise RuntimeError(f"no release known for held contract {contract_id}")
+        if release_id is None:  # unmapped and never decided by this book: fail closed
+            raise RuntimeError(f"no release known for held contract {contract_id}")
         by_contract[contract_id] += cents
         by_event[release_id] += cents
         portfolio += cents
