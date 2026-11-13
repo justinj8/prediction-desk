@@ -55,10 +55,11 @@ ADMIN = "admin:justin"
         (Measure.CPI_MOM, "0.2499996", "0.2"),
         (Measure.CPI_YOY, "3.05", "3.1"),
         (Measure.NFP_CHANGE, "150000", "150000"),
+        (Measure.NFP_CHANGE, "150500", "151000"),
         (Measure.NFP_CHANGE, "149500", "150000"),
         (Measure.NFP_CHANGE, "-149500", "-150000"),
-        (Measure.FOMC_CHANGE_BP, "-75", "-50"),
-        (Measure.FOMC_CHANGE_BP, "75", "50"),
+        (Measure.FOMC_CHANGE_BP, "-75", "-75"),
+        (Measure.FOMC_CHANGE_BP, "75", "75"),
         (Measure.FOMC_CHANGE_BP, "30", "25"),
         (Measure.FOMC_CHANGE_BP, "12.5", "25"),
         (Measure.FOMC_CHANGE_BP, "-12.5", "-25"),
@@ -103,6 +104,26 @@ def test_contract_yes_won_each_comparator(
     assert contract_yes_won(_terms(comparator, lo, hi), D(reported)) is won
 
 
+@pytest.mark.parametrize(
+    ("comparator", "strike", "won"),
+    [
+        (Comparator.LT, "-25", True),
+        (Comparator.LTE, "-50", True),
+        (Comparator.LT, "-50", True),
+        (Comparator.EQ, "-50", False),
+    ],
+)
+def test_fomc_cut_beyond_50_resolves_on_comparators(
+    comparator: Comparator, strike: str, won: bool
+) -> None:
+    reported = reported_value(Measure.FOMC_CHANGE_BP, D("-75"))
+    assert reported == D("-75")
+    terms = ContractTerms(
+        Measure.FOMC_CHANGE_BP, comparator, D(strike), None, "bp", 0, "Federal Reserve"
+    )
+    assert contract_yes_won(terms, reported) is won
+
+
 def test_between_without_upper_strike_is_an_error() -> None:
     with pytest.raises(ValueError, match="strike_hi"):
         contract_yes_won(_terms(Comparator.BETWEEN, "0.1"), D("0.2"))
@@ -128,8 +149,8 @@ async def test_cpi_mom_from_first_print_matches_synthetic_truth(
         assert got[0] == _mom(levels[sid], month)
         assert got[1] == truth.first_vintage[month]
     for measure, sid in (
-        (Measure.CPI_YOY, "CPIAUCSL"),
-        (Measure.CORE_CPI_YOY, "CPILFESL"),
+        (Measure.CPI_YOY, "CPIAUCNS"),
+        (Measure.CORE_CPI_YOY, "CPILFENS"),
     ):
         got = await official_raw_value(session, PROVIDER, release, measure, FAR)
         assert got is not None
@@ -233,7 +254,9 @@ async def test_missing_data_returns_none_and_record_skips(
 
     clock = SimClock(FAR)
     written = await record_outcomes(sessions, PROVIDER, AuditLog(clock), clock, release.id)
-    assert set(written) == {Measure.CPI_MOM, Measure.CPI_YOY}
+    # core MoM reads SA CPILFESL (dropped); core YoY reads NSA CPILFENS (still there)
+    assert set(written) == {Measure.CPI_MOM, Measure.CPI_YOY, Measure.CORE_CPI_YOY}
+    assert Measure.CORE_CPI_MOM not in written
     async with sessions() as s:
         rows = (await s.execute(select(MeasureOutcome))).scalars().all()
         assert {r.measure for r in rows} == set(written)
@@ -414,3 +437,22 @@ async def test_each_measure_family_returns_none_without_its_inputs(session: Asyn
     early = datetime(2026, 10, 29, tzinfo=UTC)
     assert await official_raw_value(session, PROVIDER, fomc, Measure.FOMC_CHANGE_BP, early) is None
     assert await official_raw_value(session, PROVIDER, fomc, Measure.FOMC_CHANGE_BP, FAR) is None
+
+
+async def test_yoy_uses_not_seasonally_adjusted_index(
+    sessions: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    vts = datetime(2026, 9, 12, 5, tzinfo=UTC)
+    rows = {
+        ("CPIAUCSL", date(2025, 8, 1)): "300",
+        ("CPIAUCSL", date(2026, 8, 1)): "309.3",  # SA YoY 3.1
+        ("CPIAUCNS", date(2025, 8, 1)): "300",
+        ("CPIAUCNS", date(2026, 8, 1)): "308.1",  # NSA YoY 2.7
+    }
+    for (sid, obs), value in rows.items():
+        session.add(_obs(sid, obs, vts, D(value)))
+    await session.commit()
+    release = await make_release(session, Series.CPI, "2026-08")
+    clock = SimClock(FAR)
+    written = await record_outcomes(sessions, PROVIDER, AuditLog(clock), clock, release.id)
+    assert written == {Measure.CPI_YOY: D("2.7")}

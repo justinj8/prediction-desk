@@ -41,7 +41,6 @@ _HUNDRED: Final = Decimal(100)
 _ONE: Final = Decimal(1)
 _THOUSAND: Final = Decimal(1000)
 _STEP_BP: Final = Decimal(25)
-_MAX_BP: Final = Decimal(50)
 _RAW_QUANT: Final = Decimal("0.00000001")  # measure_outcomes.raw_value is Numeric(20, 8)
 _DFEDTARU: Final = "DFEDTARU"
 
@@ -52,8 +51,9 @@ _CONTEXT = Context(
 _CPI_SERIES: Final[dict[Measure, str]] = {
     Measure.CPI_MOM: "CPIAUCSL",
     Measure.CORE_CPI_MOM: "CPILFESL",
-    Measure.CPI_YOY: "CPIAUCSL",
-    Measure.CORE_CPI_YOY: "CPILFESL",
+    # BLS's published 12-month change is not seasonally adjusted (as is forecasting/cpi.py).
+    Measure.CPI_YOY: "CPIAUCNS",
+    Measure.CORE_CPI_YOY: "CPILFENS",
 }
 _CPI_LAG_MONTHS: Final[dict[Measure, int]] = {
     Measure.CPI_MOM: 1,
@@ -66,13 +66,13 @@ _CPI_LAG_MONTHS: Final[dict[Measure, int]] = {
 def reported_value(measure: Measure, raw: Decimal) -> Decimal:
     """Round ``raw`` onto the measure's grid, ties away from zero (ROUND_HALF_UP).
 
-    FOMC snaps to the nearest 25 bp (a tie at +-12.5 goes to +-25) and clamps to [-50, 50], the
-    open-ended tails of the outcome grid (-50 means a cut of 50 or more).
+    FOMC snaps to the nearest 25 bp (a tie at +-12.5 goes to +-25). It is not clamped: the
+    ">= 50" tails live in the contract comparators (LTE -50, GTE 50), so -75 stays -75.
     """
     with localcontext(_CONTEXT):
         if measure is Measure.FOMC_CHANGE_BP:
             steps = (raw / _STEP_BP).quantize(_ONE, rounding=ROUND_HALF_UP)
-            return max(-_MAX_BP, min(_MAX_BP, steps * _STEP_BP)).quantize(_ONE)
+            return (steps * _STEP_BP).quantize(_ONE)
         precision = MEASURE_SPECS[measure][1]
         rounded = raw.quantize(Decimal(1).scaleb(-precision), rounding=ROUND_HALF_UP)
         return rounded.quantize(_ONE) if precision < 0 else rounded
@@ -161,7 +161,7 @@ async def official_raw_value(
     stamp = await first_vintage_ts(session, _FRED, _DFEDTARU, after)
     if stamp is None or stamp > asof:
         return None
-    levels = await levels_asof(provider, session, _DFEDTARU, asof, day)
+    levels = await levels_asof(provider, session, _DFEDTARU, stamp, day)
     before_rate, after_rate = levels.get(day), levels.get(after)
     if before_rate is None or after_rate is None:
         return None
