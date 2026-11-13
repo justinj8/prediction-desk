@@ -696,3 +696,62 @@ backend/tests/
   - Data-QA and audit-chain-break kill triggers. These callers use `trip_kill_switch`.
 - **Plan 6:** the admin endpoints for the kill switch, risk-limit versions and outcome overrides.
 - **Optional hardening:** a 3a item, not done here — grid contiguity of EQ strikes within a bracket.
+
+---
+
+## Execution Outcome and Carry-Forward (added after execution)
+
+Plan 3b was executed with subagent-driven development on branch `plan-03b-risk-and-execution` (from `main` c047ac1). Each of the 10 tasks got its own task review, and the money and concurrency tasks got reviewers who ran mutation tests. Tasks 4–9 each needed one fix round. Then came a whole-branch Opus review, one fix wave, and a scoped re-review, which returned "Ready to merge: Yes". The suite ends at **1117 tests** (`--record-mode=none --block-network`), with 99.08% total coverage and 100% on `audit/`, `pricing/`, `risk/` and `execution/`. `test_desk_end_to_end.py` takes one synthetic CPI release through price → risk → fill → mark → outcome → settle; cash reconciles to realized P&L and the audit chain verifies. The race tests fail if the `book_state` `FOR UPDATE` lock is removed.
+
+**Rulings that amended this plan** (R1–R14 are controller rulings; U1–U3 are the user's):
+- **R1.** `RiskLimits` int fields reject bool; `max_quote_age_s ≥ 1` and `cutoff_minutes ≥ 0`.
+- **R2.** `risk.engine._approve(decision)` is the only `ApprovedOrder` constructor and a documented test-only seam.
+- **R3.** The R14 clamp test uses NO asks at 0.95, so a missing clamp is detectable.
+- **R4.** Subagents implement all code. The spec's "user implements `kelly_fraction()`" was superseded by the user's choice.
+- **R5 (plan defect).** Caps and rounding size at the worst fill cost, `max(c, limit + marginal_fee(limit))`, while Kelly still uses the probe cost. A fill at the limit can no longer breach a hard cap; the per-level fee ceiling can still overshoot by a few cents.
+- **R6.** The worked-example stake became 13_250.
+- **R7.** `risk/engine.py` stays one file (about 600 lines).
+- **R8.** A fill onto a settled position is refused as `position_settled`, not raised, so the decision is consumed.
+- **R9.** `settle_release` locks the `Release` row (book, then release), which serialises it with `override_outcome`.
+- **R10.** CPI YoY outcomes come from the NSA first print (`CPIAUCNS`/`CPILFENS`), matching BLS and the YoY forecaster. MoM stays SA. U1 is unchanged.
+- **R11.** The FOMC reported value snaps to 25 bp with no ±50 clamp; the tail meaning lives in the comparators.
+- **R12.** FOMC levels are read as of the first vintage of d+1.
+- **R13.** The engine rejects FOMC strikes whose meaning differs between the pricing tail grid and settlement, as `unsupported_fomc_strike`. That covers EQ ±50, LT −50 / GT 50, LTE +50 / GTE −50, a BETWEEN end at ±50, and any |strike| > 50.
+- **R14 (3b).** The broker re-verifies its decision under the book lock and refuses after the cutoff (`past_cutoff`). The D8 re-run rebuilds no approvals after the cutoff. `settle_release` expires approved decisions that never got an order (a REFUSED `expired` Order), so they stop counting as exposure.
+- **Engine version.** `RISK_ENGINE_VERSION` is `risk:v2` after the final fix wave.
+
+**What 3b built that later plans consume**
+- `RiskEngine(clock, audit, fee_schedules).evaluate(sessions, *, book_id, run_key, slot, pricing, healthy_venues, officer) -> EvaluationResult`, and the `RiskOfficer` port: `async review(slate) -> Mapping[contract_id, max_qty]`, which fails closed.
+- `PaperBroker.submit(sessions, approved) -> OrderResult`, plus a `LiveBroker` stub that refuses to construct.
+- Book state in `risk/book.py`: `create_book`, `lock_book`, `exposure`, `held_release_id`, `mark_book`.
+- Kill switch in `risk/kill_switch.py`: `trip_kill_switch` and `reset_kill_switch` (the reset is admin-only).
+- Outcomes in `execution/outcomes.py`: `record_outcomes`, `override_outcome` and `contract_yes_won`.
+- Settlement: `execution/settlement.py` `settle_release(...) -> SettleResult(settled, pending, mismatches, expired)`.
+- `db/uow.py::unit_of_work` for every writer.
+
+**Carry-forward: Plan 4 (agents)**
+- Implement `RiskOfficer`. The caller owns the review timeout; the engine re-checks the clock after the review, so a slow officer can only cause rejections.
+- Officer cases with no tests yet: one of two ids missing, and a bug-type violation while the kill switch is already on.
+
+**Carry-forward: Plan 5 (pipeline and replay)**
+- Call `mark_book` on every snapshot poll. Today daily-loss and drawdown trip only at settlement.
+- SETTLE must call `settle_release` for every book with decisions on the release, including books that hold no position there, so orphaned approvals expire.
+- Positions on contracts unmapped after the trade stay pending, and `settlement.pending_unmapped` repeats on every run. Before settlement polling, deduplicate that event and give an admin a way to resolve these positions.
+- Contracts settle on their current terms. Bitemporal contracts, already listed for Plan 5, should snapshot the terms a position was bought on.
+- Map `run_key` to `pipeline_runs`.
+- Wire the data-QA and audit-chain-break kill triggers through `trip_kill_switch`.
+- Fetch the venue's own settlement results to fill `venue_yes_won`.
+
+**Carry-forward: Plan 6 (API)**
+- `override_outcome` refuses once anything on the release has settled. Scope that check to the measure being overridden before the endpoint ships.
+- Validate override inputs (overflow currently surfaces as a DB error) and admin actors, and add the risk-limit-versions endpoint (there is no validation of `version` yet).
+
+**Carry-forward: Plan 9 (hardening)**
+- Settlement-mismatch and kill-switch webhook alerts (spec §8, §10.2) have no owner yet.
+- Test hardening deferred from the task reviews:
+  - the D4 `edge == min_edge` boundary;
+  - a deterministic fractional-headroom case;
+  - the freshness boundary;
+  - the race test checking every decision;
+  - the redundant AUTOCOMMIT check in `unit_of_work`.
+- Optional DB backstop: a trigger on `orders` that rejects a row unless its decision is APPROVED and qty/side/limit match.
