@@ -4,6 +4,19 @@ Orders are IOC marketable limits (D3): the fill walks the side's levels priced a
 limit, whole contracts only, and the remainder is cancelled. Everything happens in one
 ``unit_of_work`` under the book lock (D2), so a kill-switch trip that committed before the lock
 is seen here and a double submit finds the first order (D8).
+
+Order of checks under the lock (ruling R14):
+
+1. the ``RiskDecision`` behind the approval must exist, be APPROVED and match it (book,
+   contract, side, limit, qty, client_order_id); a mismatch is an invariant failure that raises
+   ``RuntimeError`` and writes nothing;
+2. dedupe on ``client_order_id``: a resubmit returns the first order unchanged;
+3. refusals, first match wins: ``past_cutoff`` (now at or after the decision's release
+   ``scheduled_at - cutoff_minutes``), ``kill_switch_on``, ``no_fresh_book``, then after the
+   walk ``position_settled`` and ``insufficient_cash``.
+
+Every refusal is the same single write: one REFUSED order with no fill and one
+``order.submitted`` audit event.
 """
 
 from collections.abc import Sequence
@@ -18,16 +31,24 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from prediction_desk.audit.log import AuditLog
 from prediction_desk.clock import Clock
-from prediction_desk.db.models import BookState, EventContract, Fill, Order, Position
+from prediction_desk.db.models import (
+    BookState,
+    EventContract,
+    Fill,
+    Order,
+    Position,
+    Release,
+    RiskDecision,
+)
 from prediction_desk.db.uow import unit_of_work
-from prediction_desk.domain.enums import OrderStatus
+from prediction_desk.domain.enums import OrderStatus, Verdict
 from prediction_desk.domain.types import require_utc
 from prediction_desk.markets.snapshots import latest_snapshot_asof
 from prediction_desk.markets.types import PARSE_ERRORS, OrderBook
 from prediction_desk.pricing.book import side_levels
 from prediction_desk.pricing.fees import FeeSchedule, fill_fee_cents, schedule_for
 from prediction_desk.risk.book import lock_book
-from prediction_desk.risk.engine import ApprovedOrder
+from prediction_desk.risk.engine import ApprovedOrder, client_order_id, release_cutoff
 from prediction_desk.risk.limits import load_active_limits
 
 BROKER_ACTOR: Final = "system:paper_broker"
@@ -74,6 +95,7 @@ class PaperBroker:
     ) -> OrderResult:
         async with unit_of_work(sessions) as session:
             book = await lock_book(session, approved.book_id)
+            decision = await self._decision(session, approved)
             existing = (
                 await session.execute(
                     select(Order).where(Order.client_order_id == approved.client_order_id)
@@ -81,7 +103,36 @@ class PaperBroker:
             ).scalar_one_or_none()
             if existing is not None:
                 return await self._existing_result(session, existing)
-            return await self._place(session, book, approved)
+            return await self._place(session, book, approved, decision)
+
+    @staticmethod
+    async def _decision(session: AsyncSession, approved: ApprovedOrder) -> RiskDecision:
+        """The stored decision behind ``approved``; raises unless it is APPROVED and matches."""
+        decision = await session.get(RiskDecision, approved.risk_decision_id)
+        if (
+            decision is None
+            or decision.verdict is not Verdict.APPROVED
+            or (
+                decision.book_id,
+                decision.contract_id,
+                decision.side,
+                decision.limit_price,
+                decision.qty,
+                client_order_id(decision),
+            )
+            != (
+                approved.book_id,
+                approved.contract_id,
+                approved.side,
+                approved.limit_price,
+                approved.qty,
+                approved.client_order_id,
+            )
+        ):
+            raise RuntimeError(
+                f"approved order does not match risk decision {approved.risk_decision_id}"
+            )
+        return decision
 
     @staticmethod
     async def _existing_result(session: AsyncSession, order: Order) -> OrderResult:
@@ -97,10 +148,15 @@ class PaperBroker:
         )
 
     async def _place(
-        self, session: AsyncSession, book: BookState, approved: ApprovedOrder
+        self,
+        session: AsyncSession,
+        book: BookState,
+        approved: ApprovedOrder,
+        decision: RiskDecision,
     ) -> OrderResult:
         now = require_utc(self._clock.now())
         limits = await load_active_limits(session)
+        release = await session.get_one(Release, decision.release_id)
         snap = await latest_snapshot_asof(session, approved.contract_id, now)
         order_book: OrderBook | None = None
         if snap is not None and now - require_utc(snap.ts) <= timedelta(
@@ -112,7 +168,9 @@ class PaperBroker:
                 order_book = None
 
         refusal: str | None = None
-        if book.kill_switch_on:
+        if now >= release_cutoff(release, limits):
+            refusal = "past_cutoff"
+        elif book.kill_switch_on:
             refusal = "kill_switch_on"
         elif snap is None or order_book is None:
             refusal = "no_fresh_book"
