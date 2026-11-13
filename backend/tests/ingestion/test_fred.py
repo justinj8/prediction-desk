@@ -38,8 +38,9 @@ def _obs(rs: str, d: str, v: str) -> dict[str, str]:
 
 
 def test_constants() -> None:
-    assert len(FRED_SERIES) == 17
+    assert len(FRED_SERIES) == 18
     assert "CPIAUCSL" in FRED_SERIES and "PAYEMS" in FRED_SERIES
+    assert "DFEDTARU" in FRED_SERIES
     assert FRED_RELEASE_IDS == {Series.CPI: 10, Series.NFP: 50}
 
 
