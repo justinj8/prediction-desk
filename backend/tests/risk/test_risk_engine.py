@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -313,7 +313,7 @@ async def test_approves_and_sizes_worked_example(
     assert decision.fair_clamped == D("0.6")
     assert decision.cost_per_contract == D("0.5")
     assert decision.limit_price == D("0.53")
-    assert decision.engine_version == RISK_ENGINE_VERSION == "risk:v1"
+    assert decision.engine_version == RISK_ENGINE_VERSION == "risk:v2"
     assert decision.limits_version == 1
     assert decision.limits_snapshot["min_edge"] == "0.04"
     assert decision.inputs_hash == INPUTS_HASH
@@ -465,6 +465,99 @@ async def test_gate_boundaries_still_approve(
     sc = await _scenario(session, **kwargs)
     result = await _evaluate(sessions, sc.book, sc.pricing, officer=PassOfficer(), clock=sc.clock)
     assert len(result.approved) == 1
+
+
+async def _fomc_scenario(
+    session: AsyncSession, comparator: Comparator, lo: str, hi: str | None
+) -> Scenario:
+    release = await make_release(session, Series.FOMC, "2026-11-12")
+    contract = await add_contract(
+        session,
+        release,
+        venue=Venue.KALSHI,
+        measure=Measure.FOMC_CHANGE_BP,
+        comparator=comparator,
+        strike_lo=D(lo),
+        strike_hi=None if hi is None else D(hi),
+    )
+    snap = await add_snapshot(session, contract, ASOF - timedelta(seconds=10), [], WORKED_ASKS)
+    cp = _priced(contract, snap, "0.60", _quote("yes", "0.60", "0.50"), Unavailable("empty_side"))
+    book = await make_book(session)
+    return Scenario(book, contract.id, _release_pricing(release, [cp]), SimClock(ASOF))
+
+
+FOMC_STRIKES: list[tuple[Comparator, str, str | None, bool]] = [
+    # Pricing reads the +-50 grid points as open tails (<= -50, >= 50); settlement does not
+    # clamp (R11), so only strikes whose truth is constant over each tail are traded (R13).
+    (Comparator.EQ, "-50", None, False),
+    (Comparator.EQ, "50", None, False),
+    (Comparator.LT, "-50", None, False),
+    (Comparator.GT, "50", None, False),
+    (Comparator.EQ, "-75", None, False),
+    (Comparator.LTE, "-75", None, False),
+    (Comparator.GTE, "75", None, False),
+    (Comparator.LTE, "50", None, False),
+    (Comparator.GTE, "-50", None, False),
+    (Comparator.BETWEEN, "25", "50", False),
+    (Comparator.BETWEEN, "-25", "75", False),
+    (Comparator.LTE, "-50", None, True),
+    (Comparator.GTE, "50", None, True),
+    (Comparator.LT, "50", None, True),
+    (Comparator.GT, "-50", None, True),
+    (Comparator.LT, "-25", None, True),
+    (Comparator.GT, "25", None, True),
+    (Comparator.EQ, "0", None, True),
+    (Comparator.EQ, "-25", None, True),
+    (Comparator.EQ, "25", None, True),
+    (Comparator.BETWEEN, "-25", "25", True),
+]
+
+
+@pytest.mark.parametrize(
+    ("comparator", "lo", "hi", "allowed"),
+    FOMC_STRIKES,
+    ids=[f"{c.value}{lo}{'' if hi is None else '..' + hi}" for c, lo, hi, _ in FOMC_STRIKES],
+)
+async def test_fomc_tail_strikes_are_not_traded(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    comparator: Comparator,
+    lo: str,
+    hi: str | None,
+    allowed: bool,
+) -> None:
+    sc = await _fomc_scenario(session, comparator, lo, hi)
+    officer = PassOfficer()
+
+    result = await _evaluate(sessions, sc.book, sc.pricing, officer=officer, clock=sc.clock)
+
+    [decision] = await _decisions(sessions)
+    if allowed:
+        assert len(result.approved) == 1
+    else:
+        assert result.approved == ()
+        assert _why(decision) == "unsupported_fomc_strike"
+        assert officer.calls == []
+
+
+async def test_fomc_strike_gate_runs_after_mapping_confidence(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    sc = await _fomc_scenario(session, Comparator.EQ, "50", None)
+    row = await session.get_one(EventContract, sc.contract_id)
+    row.mapping_confidence = D("0.5")
+    await session.commit()
+    await _evaluate(sessions, sc.book, sc.pricing, officer=PassOfficer(), clock=sc.clock)
+    [decision] = await _decisions(sessions)
+    assert _why(decision) == "low_mapping_confidence"
+    # ...and before venue health.
+    await session.execute(delete(RiskDecision))
+    row.mapping_confidence = D("0.95")
+    await session.commit()
+    healthy = frozenset({Venue.POLYMARKET})
+    await _evaluate(sessions, sc.book, sc.pricing, officer=PassOfficer(), healthy=healthy)
+    [decision] = await _decisions(sessions)
+    assert _why(decision) == "unsupported_fomc_strike"
 
 
 async def test_no_quote_uses_the_unavailable_reason(
@@ -788,6 +881,35 @@ async def test_slow_officer_within_clock_gates_still_approves(
     assert order.decided_at == ASOF + wait
 
 
+async def test_write_phase_rejection_keeps_the_first_failing_gate(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    # Contract a fails gate 9 in Phase A; b survives until the switch trips during review.
+    release = await make_release(session)
+    a = await _worked_contract(session, release, strike="0.3", fair="0.53")
+    b = await _worked_contract(session, release, strike="0.4")
+    book = await make_book(session)
+    clock = SimClock(ASOF)
+
+    async def trip() -> None:
+        async with unit_of_work(sessions) as s:
+            await trip_kill_switch(
+                s, AuditLog(clock), clock, book.id, reason="manual", actor="admin:j"
+            )
+
+    await _evaluate(
+        sessions, book, _release_pricing(release, [a, b]), officer=PassOfficer(before=trip)
+    )
+
+    first, second = await _decisions(sessions)
+    assert (_why(first), _why(second)) == ("edge_below_min", "kill_switch_on")
+    async with sessions() as s:
+        event = (
+            await s.scalars(select(AuditEvent).where(AuditEvent.action == "risk.decided"))
+        ).one()
+    assert [d["reason"] for d in event.payload["decisions"]] == ["edge_below_min", "kill_switch_on"]
+
+
 async def test_kill_switch_tripped_during_review_rejects_all(
     session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -963,6 +1085,33 @@ async def test_rerun_while_killed_approves_nothing(
     assert again.killed is True
 
 
+@pytest.mark.parametrize(
+    ("wait", "approves"),
+    [
+        (RELEASE_AT - timedelta(minutes=5) - ASOF - timedelta(microseconds=1), True),
+        (RELEASE_AT - timedelta(minutes=5) - ASOF, False),
+        (timedelta(days=3), False),
+    ],
+    ids=["before-cutoff", "at-cutoff", "after-release"],
+)
+async def test_rerun_after_cutoff_approves_nothing(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    wait: timedelta,
+    approves: bool,
+) -> None:
+    sc = await _scenario(session)
+    first = await _evaluate(sessions, sc.book, sc.pricing, officer=PassOfficer(), clock=sc.clock)
+    assert len(first.approved) == 1
+    sc.clock.advance(wait)
+
+    again = await _evaluate(sessions, sc.book, sc.pricing, officer=PassOfficer(), clock=sc.clock)
+
+    assert again.decision_ids == first.decision_ids
+    assert again.approved == (first.approved if approves else ())
+    assert await _count(sessions, RiskDecision) == 1
+
+
 async def test_concurrent_same_run_slot_writes_once(
     session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -1081,6 +1230,23 @@ async def test_approve_seam_refuses_a_rejected_decision(
     await _evaluate(sessions, sc.book, sc.pricing, officer=PassOfficer())
     [decision] = await _decisions(sessions)
     with pytest.raises(ValueError, match="not approved"):
+        _approve(decision)
+
+
+def test_approve_seam_refuses_a_transient_decision() -> None:
+    decision = RiskDecision(
+        book_id=1,
+        run_key="run-1",
+        slot=Slot.T24H,
+        release_id=1,
+        contract_id=1,
+        side=PositionSide.YES,
+        limit_price=D("0.5"),
+        qty=10,
+        verdict=Verdict.APPROVED,
+        decided_at=ASOF,
+    )
+    with pytest.raises(ValueError, match="no id"):
         _approve(decision)
 
 
