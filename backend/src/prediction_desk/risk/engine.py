@@ -9,6 +9,8 @@ and the only constructor of ``ApprovedOrder``.
   it rejects the whole slate (fail closed).
 - **C, write** in one ``unit_of_work`` under the book lock (D2): re-check the switch, the side
   and the caps against fresh holdings, insert every decision, audit ``risk.decided`` once.
+  Whole-slate rejections there apply only to drafts still live, so a Phase A gate code is never
+  overwritten.
 
 Every gate, sizing and officer outcome is recorded in ``reasons``; the last entry is always
 ``{"step": "approved", ...}`` or ``{"step": "rejected", "reason": <code>}``.
@@ -39,8 +41,17 @@ from prediction_desk.db.models import (
     RiskDecision,
 )
 from prediction_desk.db.uow import unit_of_work
-from prediction_desk.domain.enums import BookMode, PositionSide, Slot, Venue, Verdict
+from prediction_desk.domain.enums import (
+    BookMode,
+    Comparator,
+    Measure,
+    PositionSide,
+    Slot,
+    Venue,
+    Verdict,
+)
 from prediction_desk.domain.types import Prob, require_utc
+from prediction_desk.markets.mapping import ContractTerms
 from prediction_desk.markets.types import OrderBook
 from prediction_desk.pricing.book import side_levels
 from prediction_desk.pricing.coherence import is_bug
@@ -60,12 +71,25 @@ from prediction_desk.risk.sizing import (
     size_order,
 )
 
-RISK_ENGINE_VERSION: Final = "risk:v1"
+RISK_ENGINE_VERSION: Final = "risk:v2"
 _SEAL: Final = object()
 _ZERO = Decimal(0)
 _CENT = Decimal(100)
 
 Reason = dict[str, str]
+
+# Ruling R13: pricing reads the FOMC grid points -50 and 50 as the open tails "<= -50" and
+# ">= 50"; settlement (R11) does not clamp. A strike at +-50 is safe only where the contract's
+# truth is the same across the whole tail; any strike beyond +-50 never is.
+_FOMC_TAIL: Final = Decimal(50)
+_FOMC_TAIL_SAFE: Final = frozenset(
+    {
+        (Comparator.LTE, -_FOMC_TAIL),
+        (Comparator.GT, -_FOMC_TAIL),
+        (Comparator.GTE, _FOMC_TAIL),
+        (Comparator.LT, _FOMC_TAIL),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -114,22 +138,46 @@ class EvaluationResult:
     killed: bool  # the book's kill switch is on as of the decision transaction
 
 
+def client_order_id(decision: RiskDecision) -> str:
+    """D8: ``sha256(f"{book_id}|{run_key}|{slot}|{contract_id}")`` of the decision."""
+    key = f"{decision.book_id}|{decision.run_key}|{decision.slot.value}|{decision.contract_id}"
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def release_cutoff(release: Release, limits: RiskLimits) -> datetime:
+    """The instant from which nothing on ``release`` may be approved or sent (gate 3)."""
+    return require_utc(release.scheduled_at) - timedelta(minutes=limits.cutoff_minutes)
+
+
+def _fomc_strike_unsupported(terms: ContractTerms) -> bool:
+    """R13: an FOMC strike whose meaning differs between the pricing grid and settlement."""
+    if terms.measure is not Measure.FOMC_CHANGE_BP:
+        return False
+    strikes = [x for x in (terms.strike_lo, terms.strike_hi) if x is not None]
+    if any(abs(x) > _FOMC_TAIL for x in strikes):
+        return True
+    at_tail = any(abs(x) == _FOMC_TAIL for x in strikes)
+    return at_tail and (terms.comparator, terms.strike_lo) not in _FOMC_TAIL_SAFE
+
+
 def _approve(decision: RiskDecision) -> ApprovedOrder:
     """The only constructor path of ``ApprovedOrder``; ``client_order_id`` per D8.
 
     Test-only seam (ruling R2): broker and settlement tests insert a real approved
-    ``RiskDecision`` row and call this, so they do not depend on sizing.
+    ``RiskDecision`` row and call this, so they do not depend on sizing. A decision that was
+    never stored (``id`` None) is refused: the broker could not tie an order to it.
     """
+    if decision.id is None:
+        raise ValueError("risk decision has no id (not stored)")
     if (
         decision.verdict is not Verdict.APPROVED
         or decision.side is None
         or decision.limit_price is None
     ):
         raise ValueError(f"risk decision {decision.id} is not approved")
-    key = f"{decision.book_id}|{decision.run_key}|{decision.slot.value}|{decision.contract_id}"
     return ApprovedOrder(
         risk_decision_id=decision.id,
-        client_order_id=hashlib.sha256(key.encode()).hexdigest(),
+        client_order_id=client_order_id(decision),
         book_id=decision.book_id,
         contract_id=decision.contract_id,
         side=decision.side,
@@ -257,8 +305,11 @@ async def _decided(s: AsyncSession, book_id: int, run_key: str, slot: Slot) -> b
     return bool(await s.scalar(select(exists().where(*_decided_filter(book_id, run_key, slot)))))
 
 
-async def _stored(s: AsyncSession, book: BookState, run_key: str, slot: Slot) -> EvaluationResult:
-    """D8: the stored decisions; approvals rebuilt only if unordered and the switch is off."""
+async def _stored(
+    s: AsyncSession, book: BookState, run_key: str, slot: Slot, now: datetime
+) -> EvaluationResult:
+    """D8: the stored decisions. An approval is rebuilt only while it has no order, the switch
+    is off and ``now`` is before its release's cutoff (ruling R14)."""
     rows = (
         await s.scalars(
             select(RiskDecision)
@@ -275,11 +326,20 @@ async def _stored(s: AsyncSession, book: BookState, run_key: str, slot: Slot) ->
             )
         ).all()
     )
+    limits = await load_active_limits(s)
+    cutoffs = {
+        rel.id: release_cutoff(rel, limits)
+        for rel in await s.scalars(
+            select(Release).where(Release.id.in_({r.release_id for r in rows}))
+        )
+    }
     approved = (
         ()
         if book.kill_switch_on
         else tuple(
-            _approve(r) for r in rows if r.verdict is Verdict.APPROVED and r.id not in ordered
+            _approve(r)
+            for r in rows
+            if r.verdict is Verdict.APPROVED and r.id not in ordered and now < cutoffs[r.release_id]
         )
     )
     return EvaluationResult(tuple(r.id for r in rows), approved, book.kill_switch_on)
@@ -321,28 +381,29 @@ class RiskEngine:
                 screened = await self._screen(s, book_id, pricing, healthy_venues, bugs)
         if screened is None:
             async with unit_of_work(sessions) as s:
-                return await _stored(s, await lock_book(s, book_id), run_key, slot)
+                book = await lock_book(s, book_id)
+                return await _stored(s, book, run_key, slot, require_utc(self._clock.now()))
         limits, mode, drafts = screened
 
         await self._review(officer, mode, [d for d in drafts if d.rejected is None])
 
         async with unit_of_work(sessions) as s:
             book = await lock_book(s, book_id)
-            if await _decided(s, book_id, run_key, slot):  # a concurrent run got here first
-                return await _stored(s, book, run_key, slot)
             # The officer may have taken arbitrarily long: re-run the clock gates (2, 3) on
             # the time the decision is written, with the Phase A inequalities.
             now = require_utc(self._clock.now())
+            if await _decided(s, book_id, run_key, slot):  # a concurrent run got here first
+                return await _stored(s, book, run_key, slot, now)
             release = await s.get_one(Release, pricing.release_id)
-            cutoff = release.scheduled_at - timedelta(minutes=limits.cutoff_minutes)
+            live = [d for d in drafts if d.rejected is None]  # keep Phase A's gate codes
             if bugs:
-                _reject(drafts, "pricing_sanity_violation")
+                _reject(live, "pricing_sanity_violation")
             elif book.kill_switch_on:
-                _reject(drafts, "kill_switch_on")
+                _reject(live, "kill_switch_on")
             elif now - require_utc(pricing.asof) > timedelta(seconds=limits.max_quote_age_s):
-                _reject(drafts, "stale_pricing")
-            elif now >= cutoff:
-                _reject(drafts, "past_cutoff")
+                _reject(live, "stale_pricing")
+            elif now >= release_cutoff(release, limits):
+                _reject(live, "past_cutoff")
             else:
                 await self._recheck(s, book, pricing.release_id, drafts, limits)
             rows = [self._row(d, book_id, run_key, slot, pricing, limits, now) for d in drafts]
@@ -417,7 +478,7 @@ class RiskEngine:
         now = require_utc(self._clock.now())
         asof = require_utc(pricing.asof)
         incomplete = {v.scope for v in pricing.coherence if v.kind == "incomplete_bracket"}
-        cutoff = release.scheduled_at - timedelta(minutes=limits.cutoff_minutes)
+        cutoff = release_cutoff(release, limits)
         for d in drafts:
             row, quote = rows[d.cid], d.cp.quote
             if book.kill_switch_on:
@@ -431,6 +492,8 @@ class RiskEngine:
                 or row.mapping_confidence < limits.min_mapping_confidence
             ):
                 d.rejected = "low_mapping_confidence"
+            elif _fomc_strike_unsupported(d.cp.terms):
+                d.rejected = "unsupported_fomc_strike"
             elif d.cp.venue not in healthy:
                 d.rejected = "venue_unhealthy"
             elif isinstance(quote, Unavailable):
