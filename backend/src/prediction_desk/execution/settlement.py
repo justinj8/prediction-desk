@@ -10,14 +10,21 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from prediction_desk.audit.log import AuditLog
 from prediction_desk.clock import Clock
-from prediction_desk.db.models import EventContract, MeasureOutcome, Position, Release, Settlement
+from prediction_desk.db.models import (
+    EventContract,
+    MeasureOutcome,
+    Position,
+    Release,
+    RiskDecision,
+    Settlement,
+)
 from prediction_desk.db.uow import unit_of_work
-from prediction_desk.domain.enums import PositionSide
+from prediction_desk.domain.enums import PositionSide, Verdict
 from prediction_desk.domain.types import require_utc
 from prediction_desk.execution.outcomes import contract_yes_won
 from prediction_desk.markets.terms import terms_from_row
@@ -61,6 +68,19 @@ async def settle_release(
         ).scalar_one_or_none()
         if release is None:
             raise ValueError(f"unknown release {release_id}")
+        # A contract that discovery unmapped has release_id NULL; like exposure(), attribute it
+        # to the release of the book's first approved decision on it.
+        decided_release = (
+            select(RiskDecision.release_id)
+            .where(
+                RiskDecision.book_id == book_id,
+                RiskDecision.contract_id == Position.contract_id,
+                RiskDecision.verdict == Verdict.APPROVED,
+            )
+            .order_by(RiskDecision.id)
+            .limit(1)
+            .scalar_subquery()
+        )
         rows = (
             await session.execute(
                 select(Position, EventContract)
@@ -68,7 +88,10 @@ async def settle_release(
                 .where(
                     Position.book_id == book_id,
                     Position.settled.is_(False),
-                    EventContract.release_id == release_id,
+                    or_(
+                        EventContract.release_id == release_id,
+                        (EventContract.release_id.is_(None)) & (decided_release == release_id),
+                    ),
                 )
                 .order_by(Position.id)
             )
@@ -79,6 +102,17 @@ async def settle_release(
                 terms = terms_from_row(contract)
             except ValueError:
                 pending.append(contract.id)
+                events.append(
+                    (
+                        "position",
+                        str(position.id),
+                        {
+                            "action": "settlement.pending_unmapped",
+                            "contract_id": contract.id,
+                            "release_id": release_id,
+                        },
+                    )
+                )
                 continue
             outcome = await session.get(MeasureOutcome, (release_id, terms.measure))
             if outcome is None:
