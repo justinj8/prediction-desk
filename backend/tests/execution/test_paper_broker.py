@@ -34,6 +34,7 @@ from prediction_desk.domain.enums import (
 )
 from prediction_desk.execution.broker import LiveBroker, OrderResult, PaperBroker
 from prediction_desk.pricing.fees import FeeSchedule
+from prediction_desk.risk.book import exposure
 from prediction_desk.risk.engine import ApprovedOrder, _approve
 from prediction_desk.risk.kill_switch import trip_kill_switch
 
@@ -287,6 +288,12 @@ async def test_refused_when_cash_insufficient(
     assert await _count(session, Fill) == 0
     assert await _count(session, Position) == 0
     assert (await _book(session, env.book.id)).cash_cents == 13_000
+    audit = (
+        await session.execute(select(AuditEvent).where(AuditEvent.action == "order.submitted"))
+    ).scalar_one()
+    assert audit.payload["filled_qty"] == 0
+    assert audit.payload["avg_price"] is None
+    assert audit.payload["cost_cents"] == 0
 
 
 async def test_submit_twice_one_order(
@@ -370,7 +377,7 @@ async def test_top_up_accumulates_position_cost(
     assert await _count(session, Order) == 2
 
 
-async def test_top_up_refuses_settled_or_opposite_position(
+async def test_top_up_of_opposite_side_is_an_invariant_error(
     session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
     env = await _env(session, asks=[("0.50", "1000")], bids=[("0.40", "1000")])
@@ -382,14 +389,95 @@ async def test_top_up_refuses_settled_or_opposite_position(
     )
     with pytest.raises(RuntimeError, match="opposite"):
         await env.broker.submit(sessions, opposite)
+    assert await _count(session, Order) == 1  # the failed submit rolled back
 
+
+async def test_fill_onto_settled_position_is_refused_not_raised(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    env = await _env(session, asks=[("0.50", "1000")])
+    await env.broker.submit(
+        sessions, await _approved(session, env, qty=10, limit="0.50", run_key="a")
+    )
     position = (await session.execute(select(Position))).scalar_one()
     position.settled = True
     await session.commit()
+    cash_before = (await _book(session, env.book.id)).cash_cents
     again = await _approved(session, env, qty=10, limit="0.50", run_key="c")
-    with pytest.raises(RuntimeError, match="settled"):
-        await env.broker.submit(sessions, again)
-    assert await _count(session, Order) == 1  # both failed submits rolled back
+    assert (await exposure(session, env.book.id)).portfolio == 100  # pending decision counted
+
+    result = await env.broker.submit(sessions, again)
+    replay = await env.broker.submit(sessions, again)
+
+    assert result.status is OrderStatus.REFUSED
+    assert (result.filled_qty, result.cost_cents, result.fees_cents) == (0, 0, 0)
+    assert replay == result
+    order = (await session.execute(select(Order).where(Order.id == result.order_id))).scalar_one()
+    assert order.status_reason == "position_settled"
+    assert await _count(session, Fill) == 1  # only the first order's
+    await session.refresh(position)
+    assert (position.qty, position.settled) == (10, True)
+    assert (await _book(session, env.book.id)).cash_cents == cash_before
+    assert (await exposure(session, env.book.id)).portfolio == 0  # no longer pending
+    audits = (
+        (
+            await session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "order.submitted", AuditEvent.entity_id == str(order.id)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audits) == 1
+
+
+async def test_sub_cent_fill_cost_rounds_up(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    # 3 x 0.333 = 0.999 dollars = 99.9 cents -> ceil 100 (floor would give 99).
+    # Fee: 0.07 * 3 * 0.333 * 0.667 * 100 = 4.664 -> 5 (order-level equals per-level).
+    env = await _env(session, asks=[("0.333", "3")])
+    approved = await _approved(session, env, qty=3, limit="0.333")
+
+    result = await env.broker.submit(sessions, approved)
+
+    assert (result.cost_cents, result.fees_cents) == (100, 5)
+    position = (await session.execute(select(Position))).scalar_one()
+    assert position.cost_cents == 105
+    assert (await _book(session, env.book.id)).cash_cents == 1_000_000 - 105
+
+
+async def test_fee_is_the_larger_of_order_level_and_per_level(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    # Five 1-contract asks 0.50..0.54, Kalshi rate 0.07. Per level: 7*p*(1-p) is
+    # 1.75, 1.7493, 1.7472, 1.7437, 1.7388, each ceiling to 2 -> 10.
+    # Order level at avg 0.52 x 5: 0.07*5*0.52*0.48*100 = 8.736 -> 9. The larger, 10, is charged.
+    asks = [("0.50", "1"), ("0.51", "1"), ("0.52", "1"), ("0.53", "1"), ("0.54", "1")]
+    env = await _env(session, asks=asks)
+    approved = await _approved(session, env, qty=5, limit="0.54")
+
+    result = await env.broker.submit(sessions, approved)
+
+    assert (result.cost_cents, result.fees_cents) == (260, 10)
+    fill = (await session.execute(select(Fill))).scalar_one()
+    assert fill.slippage_cents == 10  # (2.60 - 5 * 0.50) * 100, exact
+
+
+async def test_slippage_half_cent_rounds_up(
+    session: AsyncSession, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    # 0.500 + 0.505 = 1.005 dollars; slippage (1.005 - 2 * 0.500) * 100 = 0.5 -> 1 (half up).
+    env = await _env(session, asks=[("0.500", "1"), ("0.505", "1")])
+    approved = await _approved(session, env, qty=2, limit="0.505")
+
+    result = await env.broker.submit(sessions, approved)
+
+    assert result.cost_cents == 101  # 100.5 rounds up
+    fill = (await session.execute(select(Fill))).scalar_one()
+    assert fill.slippage_cents == 1
 
 
 def test_live_broker_refuses_to_construct() -> None:

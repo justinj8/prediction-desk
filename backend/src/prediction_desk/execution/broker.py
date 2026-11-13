@@ -148,9 +148,14 @@ class PaperBroker:
                 slippage = int(
                     ((exact_cost - best * filled) * _CENT).to_integral_value(ROUND_HALF_UP)
                 )
-                if book.cash_cents - cost - fees < 0:
+                held = await self._position(session, approved)
+                if held is not None and held.settled:
+                    refusal = "position_settled"
+                elif book.cash_cents - cost - fees < 0:
                     refusal = "insufficient_cash"
+                if refusal is not None:
                     filled = cost = fees = slippage = 0
+                    avg = Decimal(0)
 
         if refusal is not None:
             status, reason = OrderStatus.REFUSED, refusal
@@ -214,7 +219,7 @@ class PaperBroker:
                 "filled_qty": filled,
                 "status": status,
                 "status_reason": reason,
-                "avg_price": avg.quantize(_AVG_QUANT, rounding=ROUND_HALF_UP),
+                "avg_price": avg.quantize(_AVG_QUANT, rounding=ROUND_HALF_UP) if filled else None,
                 "cost_cents": cost,
                 "fees_cents": fees,
                 "slippage_cents": slippage,
@@ -227,10 +232,8 @@ class PaperBroker:
         )
 
     @staticmethod
-    async def _apply_to_position(
-        session: AsyncSession, approved: ApprovedOrder, filled: int, basis_cents: int, now: datetime
-    ) -> None:
-        position = (
+    async def _position(session: AsyncSession, approved: ApprovedOrder) -> Position | None:
+        return (
             await session.execute(
                 select(Position)
                 .where(
@@ -240,6 +243,16 @@ class PaperBroker:
                 .with_for_update()
             )
         ).scalar_one_or_none()
+
+    async def _apply_to_position(
+        self,
+        session: AsyncSession,
+        approved: ApprovedOrder,
+        filled: int,
+        basis_cents: int,
+        now: datetime,
+    ) -> None:
+        position = await self._position(session, approved)
         if position is None:
             session.add(
                 Position(
@@ -252,8 +265,6 @@ class PaperBroker:
                 )
             )
             return
-        if position.settled:
-            raise RuntimeError(f"position {position.id} is already settled")
         if position.side is not approved.side:
             raise RuntimeError(f"position {position.id} holds the opposite side")
         position.qty += filled
