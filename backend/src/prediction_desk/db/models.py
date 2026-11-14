@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import (
     CHAR,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     Enum,
@@ -16,6 +17,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -23,21 +26,34 @@ from sqlalchemy.orm import Mapped, mapped_column
 from prediction_desk.db.base import Base
 from prediction_desk.db.types import UTCDateTime, str_enum
 from prediction_desk.domain.enums import (
+    BookMode,
     Comparator,
     DataSource,
     MappingStatus,
     Measure,
+    OrderStatus,
+    PositionSide,
     Series,
+    Slot,
     Venue,
+    Verdict,
 )
 
 __all__ = [
     "AuditEvent",
+    "BookState",
     "DataObservation",
     "EventContract",
+    "Fill",
     "MarketSnapshot",
+    "MeasureOutcome",
+    "Order",
+    "Position",
     "Release",
+    "RiskDecision",
+    "RiskLimitsRow",
     "Series",
+    "Settlement",
 ]
 
 
@@ -146,3 +162,175 @@ class MarketSnapshot(Base):
     bid_size: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
     ask_size: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
     book: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+
+class RiskLimitsRow(Base):
+    """Versioned risk parameters; the single active row is the live policy."""
+
+    __tablename__ = "risk_limits"
+    __table_args__ = (
+        Index("uq_risk_limits_active", "active", unique=True, postgresql_where=text("active")),
+    )
+
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    params: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    active: Mapped[bool] = mapped_column(Boolean)
+
+
+class BookState(Base):
+    """One paper book: cash, last-marked equity, drawdown anchors and the kill switch."""
+
+    __tablename__ = "book_state"
+    __table_args__ = (
+        UniqueConstraint("mode", "replay_batch_id", postgresql_nulls_not_distinct=True),
+        CheckConstraint("mode <> 'live' OR replay_batch_id IS NULL", name="live_has_no_batch"),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    mode: Mapped[BookMode] = mapped_column(str_enum(BookMode, "book_mode"))
+    replay_batch_id: Mapped[int | None] = mapped_column(BigInteger)
+    cash_cents: Mapped[int] = mapped_column(BigInteger)
+    equity_cents: Mapped[int] = mapped_column(BigInteger)
+    peak_equity_cents: Mapped[int] = mapped_column(BigInteger)
+    day_start_equity_cents: Mapped[int] = mapped_column(BigInteger)
+    day_start_date: Mapped[date] = mapped_column(Date)
+    kill_switch_on: Mapped[bool] = mapped_column(Boolean)
+    kill_reason: Mapped[str | None] = mapped_column(Text)
+    kill_actor: Mapped[str | None] = mapped_column(Text)
+    kill_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class RiskDecision(Base):
+    """Immutable verdict for one (book, run, slot, contract), with the inputs that produced it."""
+
+    __tablename__ = "risk_decisions"
+    __table_args__ = (
+        UniqueConstraint("book_id", "run_key", "slot", "contract_id"),
+        CheckConstraint(
+            "verdict <> 'approved' OR (side IS NOT NULL AND qty >= 1 AND limit_price IS NOT NULL)",
+            name="approved_complete",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    book_id: Mapped[int] = mapped_column(ForeignKey("book_state.id"))
+    run_key: Mapped[str] = mapped_column(Text)
+    slot: Mapped[Slot] = mapped_column(str_enum(Slot, "slot"))
+    release_id: Mapped[int] = mapped_column(ForeignKey("releases.id"))
+    contract_id: Mapped[int] = mapped_column(ForeignKey("event_contracts.id"))
+    side: Mapped[PositionSide | None] = mapped_column(str_enum(PositionSide, "position_side"))
+    inputs_hash: Mapped[str] = mapped_column(CHAR(64))
+    engine_version: Mapped[str] = mapped_column(Text)
+    fair_yes: Mapped[Decimal] = mapped_column(Numeric(6, 5))
+    # Clamped fair probability of the chosen side.
+    fair_clamped: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
+    cost_per_contract: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    limit_price: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
+    kelly_raw_cents: Mapped[int | None] = mapped_column(BigInteger)
+    stake_engine_cents: Mapped[int | None] = mapped_column(BigInteger)
+    stake_officer_cents: Mapped[int | None] = mapped_column(BigInteger)
+    stake_final_cents: Mapped[int | None] = mapped_column(BigInteger)
+    qty: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    verdict: Mapped[Verdict] = mapped_column(str_enum(Verdict, "verdict"))
+    # Ordered list of reason codes.
+    reasons: Mapped[list[Any]] = mapped_column(JSONB)
+    limits_version: Mapped[int] = mapped_column(ForeignKey("risk_limits.version"))
+    limits_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    decided_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class Order(Base):
+    """IOC marketable-limit order; always traceable to the approving risk decision."""
+
+    __tablename__ = "orders"
+    __table_args__ = (
+        CheckConstraint("0 <= filled_qty AND filled_qty <= qty", name="filled_within_qty"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    client_order_id: Mapped[str] = mapped_column(CHAR(64), unique=True)
+    risk_decision_id: Mapped[int] = mapped_column(ForeignKey("risk_decisions.id"), unique=True)
+    book_id: Mapped[int] = mapped_column(ForeignKey("book_state.id"))
+    contract_id: Mapped[int] = mapped_column(ForeignKey("event_contracts.id"))
+    side: Mapped[PositionSide] = mapped_column(str_enum(PositionSide, "position_side"))
+    limit_price: Mapped[Decimal] = mapped_column(Numeric(6, 5))
+    qty: Mapped[int] = mapped_column(Integer)
+    filled_qty: Mapped[int] = mapped_column(Integer)
+    status: Mapped[OrderStatus] = mapped_column(str_enum(OrderStatus, "order_status"))
+    status_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class Fill(Base):
+    """The single fill of an order (IOC: one row per order)."""
+
+    __tablename__ = "fills"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), unique=True)
+    qty: Mapped[int] = mapped_column(Integer)
+    avg_price: Mapped[Decimal] = mapped_column(Numeric(12, 8))
+    cost_cents: Mapped[int] = mapped_column(BigInteger)
+    fees_cents: Mapped[int] = mapped_column(BigInteger)
+    slippage_cents: Mapped[int] = mapped_column(BigInteger)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("market_snapshots.id"))
+    ts: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class Position(Base):
+    """Held contracts on one side; cost_cents is price paid plus fees."""
+
+    __tablename__ = "positions"
+    __table_args__ = (UniqueConstraint("book_id", "contract_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    book_id: Mapped[int] = mapped_column(ForeignKey("book_state.id"))
+    contract_id: Mapped[int] = mapped_column(ForeignKey("event_contracts.id"))
+    side: Mapped[PositionSide] = mapped_column(str_enum(PositionSide, "position_side"))
+    qty: Mapped[int] = mapped_column(Integer)
+    cost_cents: Mapped[int] = mapped_column(BigInteger)
+    realized_pnl_cents: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    mark_price: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
+    settled: Mapped[bool] = mapped_column(Boolean, server_default=false())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class MeasureOutcome(Base):
+    """Official value of one measure for one release, with provenance (fred_first_print or
+    admin_override)."""
+
+    __tablename__ = "measure_outcomes"
+
+    release_id: Mapped[int] = mapped_column(ForeignKey("releases.id"), primary_key=True)
+    measure: Mapped[Measure] = mapped_column(str_enum(Measure, "measure"), primary_key=True)
+    raw_value: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    reported_value: Mapped[Decimal] = mapped_column(Numeric(14, 4))
+    source: Mapped[str] = mapped_column(Text)
+    source_vintage_ts: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    recorded_by: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    recorded_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class Settlement(Base):
+    """Payout of one position; venue_yes_won is only compared, never decisive."""
+
+    __tablename__ = "settlements"
+    __table_args__ = (UniqueConstraint("book_id", "contract_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    book_id: Mapped[int] = mapped_column(ForeignKey("book_state.id"))
+    contract_id: Mapped[int] = mapped_column(ForeignKey("event_contracts.id"))
+    side: Mapped[PositionSide] = mapped_column(str_enum(PositionSide, "position_side"))
+    qty: Mapped[int] = mapped_column(Integer)
+    yes_won: Mapped[bool] = mapped_column(Boolean)
+    payout_cents: Mapped[int] = mapped_column(BigInteger)
+    realized_pnl_cents: Mapped[int] = mapped_column(BigInteger)
+    reported_value: Mapped[Decimal] = mapped_column(Numeric(14, 4))
+    venue_yes_won: Mapped[bool | None] = mapped_column(Boolean)
+    mismatch: Mapped[bool] = mapped_column(Boolean)
+    settled_at: Mapped[datetime] = mapped_column(UTCDateTime())

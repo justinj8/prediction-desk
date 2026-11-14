@@ -30,6 +30,7 @@ from prediction_desk.ingestion.provider import MacroDataProvider
 from prediction_desk.markets.terms import rules_hash, terms_from_row
 from prediction_desk.markets.types import OrderBook
 from prediction_desk.pricing import release as release_mod
+from prediction_desk.pricing.coherence import CoherenceViolation
 from prediction_desk.pricing.edge import EdgeQuote, Unavailable, best_side, evaluate_edge
 from prediction_desk.pricing.fair import fair_prob
 from prediction_desk.pricing.fees import FeeSchedule
@@ -870,8 +871,12 @@ async def test_inputs_hash_sensitive_to_unmapped_polymarket_sibling(
     )
     after = await price(session, release)
     assert after.contracts == before.contracts
-    assert after.coherence == ("polymarket event P: incomplete bracket (1 of 2 mapped)",)
-    assert before.coherence == ("polymarket event P: incomplete bracket (1 of 1 mapped)",)
+    assert after.coherence == (
+        CoherenceViolation("incomplete_bracket", "P", "incomplete bracket (1 of 2 mapped)"),
+    )
+    assert before.coherence == (
+        CoherenceViolation("incomplete_bracket", "P", "incomplete bracket (1 of 1 mapped)"),
+    )
     assert after.inputs_hash != before.inputs_hash
 
 
@@ -1118,8 +1123,9 @@ async def test_bracket_complete_partition_with_bad_sum_reports_sum(session: Asyn
         session, release, "PS", [PARTITION[0], PARTITION[1], PARTITION[2], PARTITION[4]], "S"
     )
     result = await price(session, release)
-    (msg,) = result.coherence
-    assert msg.startswith("polymarket event PS: bracket probabilities sum to ")
+    (viol,) = result.coherence
+    assert (viol.kind, viol.scope) == ("bracket_sum", "PS")
+    assert viol.message.startswith("bracket probabilities sum to ")
 
 
 async def test_bracket_three_of_four_mapped_is_incomplete(session: AsyncSession) -> None:
@@ -1129,7 +1135,9 @@ async def test_bracket_three_of_four_mapped_is_incomplete(session: AsyncSession)
         session, None, "Iun", venue=Venue.POLYMARKET, event="PI", status=MappingStatus.UNMAPPED
     )
     result = await price(session, release)
-    assert result.coherence == ("polymarket event PI: incomplete bracket (4 of 5 mapped)",)
+    assert result.coherence == (
+        CoherenceViolation("incomplete_bracket", "PI", "incomplete bracket (4 of 5 mapped)"),
+    )
 
 
 async def test_bracket_unmapped_sibling_counts_toward_n(session: AsyncSession) -> None:
@@ -1141,7 +1149,9 @@ async def test_bracket_unmapped_sibling_counts_toward_n(session: AsyncSession) -
     )
     await add_contract(session, other, "Uy", venue=Venue.POLYMARKET, event="PU")  # other release
     result = await price(session, release)
-    assert result.coherence == ("polymarket event PU: incomplete bracket (2 of 4 mapped)",)
+    assert result.coherence == (
+        CoherenceViolation("incomplete_bracket", "PU", "incomplete bracket (2 of 4 mapped)"),
+    )
 
 
 async def test_bracket_unpriced_sibling_is_incomplete(session: AsyncSession) -> None:
@@ -1158,7 +1168,9 @@ async def test_bracket_unpriced_sibling_is_incomplete(session: AsyncSession) -> 
         unit="jobs",
     )
     result = await price(session, release)
-    assert result.coherence == ("polymarket event PN: incomplete bracket (4 of 5 mapped)",)
+    assert result.coherence == (
+        CoherenceViolation("incomplete_bracket", "PN", "incomplete bracket (4 of 5 mapped)"),
+    )
 
 
 async def test_bracket_two_lower_tails_is_not_a_partition(session: AsyncSession) -> None:
@@ -1166,21 +1178,27 @@ async def test_bracket_two_lower_tails_is_not_a_partition(session: AsyncSession)
     parts = [(Comparator.LT, "0.2"), (Comparator.LTE, "0.1"), (Comparator.GT, "0.4")]
     await _bracket(session, release, "PL", parts, "L")
     result = await price(session, release)
-    assert result.coherence == ("polymarket event PL: incomplete bracket (3 of 3 mapped)",)
+    assert result.coherence == (
+        CoherenceViolation("incomplete_bracket", "PL", "incomplete bracket (3 of 3 mapped)"),
+    )
 
 
 async def test_bracket_without_upper_tail_is_not_a_partition(session: AsyncSession) -> None:
     release = await make_release(session)
     await _bracket(session, release, "PW", PARTITION[:4], "W")
     result = await price(session, release)
-    assert result.coherence == ("polymarket event PW: incomplete bracket (4 of 4 mapped)",)
+    assert result.coherence == (
+        CoherenceViolation("incomplete_bracket", "PW", "incomplete bracket (4 of 4 mapped)"),
+    )
 
 
 async def test_bracket_lone_contract_is_incomplete(session: AsyncSession) -> None:
     release = await make_release(session)
     await add_contract(session, release, "P3", venue=Venue.POLYMARKET, event="LONE", strike="0.9")
     result = await price(session, release)
-    assert result.coherence == ("polymarket event LONE: incomplete bracket (1 of 1 mapped)",)
+    assert result.coherence == (
+        CoherenceViolation("incomplete_bracket", "LONE", "incomplete bracket (1 of 1 mapped)"),
+    )
 
 
 async def test_coherence_reports_sorted_violations(
@@ -1208,11 +1226,16 @@ async def test_coherence_reports_sorted_violations(
     result = await price(session, release)
     assert len(result.coherence) == 4
     assert result.coherence == tuple(sorted(result.coherence))
-    kalshi, incomplete, bad_sum, poly = result.coherence
-    assert kalshi.startswith("kalshi: cpi_mom gt: strike 0.2500 prob 0.20000 vs strike 0.3500")
-    assert incomplete == "polymarket event PM: incomplete bracket (2 of 2 mapped)"
-    assert bad_sum.startswith("polymarket event PS: bracket probabilities sum to ")
-    assert poly.startswith("polymarket: cpi_mom gt: strike 0.2500 prob 0.20000 vs strike 0.3500")
+    bad_sum, incomplete, kalshi, poly = result.coherence
+    assert (kalshi.kind, kalshi.scope) == ("monotonic", "kalshi")
+    assert kalshi.message.startswith("cpi_mom gt: strike 0.2500 prob 0.20000 vs strike 0.3500")
+    assert incomplete == CoherenceViolation(
+        "incomplete_bracket", "PM", "incomplete bracket (2 of 2 mapped)"
+    )
+    assert (bad_sum.kind, bad_sum.scope) == ("bracket_sum", "PS")
+    assert bad_sum.message.startswith("bracket probabilities sum to ")
+    assert (poly.kind, poly.scope) == ("monotonic", "polymarket")
+    assert poly.message.startswith("cpi_mom gt: strike 0.2500 prob 0.20000 vs strike 0.3500")
 
 
 # ---- read-only ------------------------------------------------------------------------------
