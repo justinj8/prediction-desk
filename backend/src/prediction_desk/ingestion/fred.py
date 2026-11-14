@@ -34,6 +34,7 @@ FRED_SERIES: tuple[str, ...] = (
     "DTB3",
     "SOFR",
     "DGS2",
+    "DFEDTARU",
 )
 
 FRED_RELEASE_IDS: Mapping[Series, int] = {Series.CPI: 10, Series.NFP: 50}

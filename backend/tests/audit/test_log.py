@@ -77,7 +77,10 @@ async def test_rolled_back_append_leaves_no_row_and_gap_still_verifies(
     await log.append(
         session, actor="system", entity="test", entity_id="x", action="noop", payload={}
     )
+    count = select(func.count()).select_from(AuditEvent)
+    assert (await session.execute(count)).scalar_one() == 2
     await session.rollback()
+    assert (await session.execute(count)).scalar_one() == 1
     await _append(log, session, 3)
     rows = (await session.execute(select(AuditEvent).order_by(AuditEvent.seq))).scalars().all()
     assert len(rows) == 2 and rows[1].seq > rows[0].seq + 1  # gap from rollback
